@@ -41,9 +41,26 @@ test('successful init stages and selftests before stopping, stores exact durable
   assert.ok(f.calls.findIndex(c=>c[0]==='candidate')<f.calls.findIndex(c=>c[0]==='stop'));
   assert.deepEqual(await fs.readFile(f.paths.settings),f.old.settings);assert.equal(await fs.readFile(path.join(f.paths.base,'WPS一键排版.app','keep.txt'),'utf8'),'keep old app');
   for(const key of Object.keys(f.old))assert.deepEqual(await fs.readFile(path.join(result.backup,`${key}.backup`)),f.old[key]);
-  assert.equal((await f.installer.check()).ok,true);assert.equal(await fs.readFile(path.join(result.runtime,'build-id'),'utf8'),'candidate-build-123\n');
+  const checked=await f.installer.check();assert.equal(checked.ok,true);assert.equal(checked.version,'1.2.0-beta.1');assert.equal(checked.candidateVersion,'1.2.0-beta.1');assert.equal(await fs.readFile(path.join(result.runtime,'build-id'),'utf8'),'candidate-build-123\n');
   assert.match(await fs.readFile(f.paths.registration,'utf8'),/name="other"/);assert.match(await fs.readFile(f.paths.agent,'utf8'),new RegExp(process.execPath.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
   assert.equal(await fs.readFile(f.paths.active).catch(e=>e.code), 'ENOENT');assert.equal(await fs.readFile(f.paths.lock).catch(e=>e.code),'ENOENT');
+});
+test('check rejects an older healthy installed build when a different ZIP candidate has the same version',async t=>{
+  const f=await fixture(t);await f.installer.init();const beforeAgent=await fs.readFile(f.paths.agent);
+  await fs.writeFile(path.join(f.source,'build-id'),'another-candidate-same-version\n');
+  const result=await f.installer.check();
+  assert.equal(result.ok,false);assert.equal(result.loaded,true);assert.equal(result.buildID,'candidate-build-123\n');assert.equal(result.candidateBuildID,'another-candidate-same-version\n');
+  assert.equal(result.version,null);assert.equal(result.candidateVersion,'1.2.0-beta.1');
+  assert.match(result.message,/当前候选尚未切换.*初始化.command/);assert.deepEqual(await fs.readFile(f.paths.agent),beforeAgent);
+});
+test('check distinguishes an unavailable installed candidate from a candidate that was never switched',async t=>{
+  const f=await fixture(t);const old=await f.installer.check();assert.equal(old.ok,false);assert.equal(old.version,null);assert.match(old.message,/当前候选尚未切换/);
+  await f.installer.init();f.platform.health=async()=>{throw new Error('installed-candidate-http-down');};
+  const result=await f.installer.check();assert.equal(result.ok,false);assert.equal(result.error,'installed-candidate-http-down');assert.match(result.message,/本地服务尚未就绪/);assert.doesNotMatch(result.message,/尚未切换/);
+});
+test('check without a source build-id retains installed-build verification',async t=>{
+  const f=await fixture(t);await f.installer.init();await fs.rm(path.join(f.source,'build-id'));
+  const result=await f.installer.check();assert.equal(result.ok,true);assert.equal(result.candidateBuildID,null);assert.equal(result.version,null);
 });
 test('running WPS blocks all mutations before snapshot; candidate failure keeps old service and bytes',async t=>{
   const running=await fixture(t,{running:true});await assert.rejects(running.installer.init(),/WPS 仍在运行/);await running.unchanged();assert.equal(running.calls.some(c=>c[0]==='stop'),false);

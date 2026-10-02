@@ -1,7 +1,4 @@
 #!/bin/bash
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-node "$ROOT/node-host/cli.mjs" rollback
-printf '%s\n' '按回车关闭此窗口。'
-read -r
+ROOT="$(cd "$(/usr/bin/dirname "$0")" && pwd)"
+exec /bin/bash "$ROOT/node-host/launch.sh" rollback

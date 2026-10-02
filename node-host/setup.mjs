@@ -200,10 +200,13 @@ export class Installer {
   }
   async check() {
     const interrupted = await readOptional(this.paths.active), last = await this.readRecord(this.paths.last);
+    const candidate = await readOptional(path.join(this.sourceRoot,'build-id'));
+    const candidateBuildID = candidate === null ? null : candidate.toString('utf8');
     const loaded = await this.platform.loaded(); let buildID = null, error = null;
     if (loaded) { try { buildID = await this.platform.health(); } catch (failure) { error = failure.message; } }
-    const ready = loaded && buildID === (last?.buildID || VERSION);
-    return { ok:ready && !interrupted,loaded,buildID,version:VERSION,interrupted:interrupted !== null,runtime:last?.runtime || null,settings:this.paths.settings,error,message:interrupted ? '上次操作未完成。退出 WPS 后重新执行初始化以恢复。' : ready ? '本地服务已启动；WPS 连接需在插件内检查。' : '本地服务尚未就绪，请执行初始化。' };
+    const candidateMismatch = candidateBuildID !== null && (last?.buildID !== candidateBuildID || (buildID !== null && buildID !== candidateBuildID));
+    const ready = loaded && buildID === (last?.buildID || VERSION) && !candidateMismatch;
+    return { ok:ready && !interrupted,loaded,buildID,version:ready && candidateBuildID !== null ? VERSION : null,candidateVersion:VERSION,candidateBuildID,interrupted:interrupted !== null,runtime:last?.runtime || null,settings:this.paths.settings,error,message:interrupted ? '上次操作未完成。退出 WPS 后重新执行初始化以恢复。' : candidateMismatch ? '当前候选尚未切换。请保存文档并完全退出 WPS，再运行此目录的初始化.command。' : ready ? '本地服务已启动；WPS 连接需在插件内检查。' : '本地服务尚未就绪，请执行初始化。' };
   }
   async preserveModern(directory) {
     const bytes = await readOptional(this.paths.settings);
