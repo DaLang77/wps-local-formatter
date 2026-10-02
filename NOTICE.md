@@ -11,3 +11,5 @@
 不随应用分发字体文件。字体由用户本机和 WPS 提供，安装前后均不分发或替换字体。
 
 安装程序图标由本项目的 `scripts/make-icon.swift` 绘制；界面操作图标为本项目 SVG 线条图形，无需额外图标库。
+
+`docs/images/` 为本项目实际设置页面的截图，使用默认合成配置，通过 `scripts/capture-demo-images.cjs` 生成，随项目采用 MIT 许可。Playwright 仅为可选的截图开发工具，不随应用分发。

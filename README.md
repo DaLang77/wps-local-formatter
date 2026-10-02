@@ -5,6 +5,22 @@
 
 Mac 本地 WPS 文字插件。按模板统一标题、正文、落款、页面、页眉页脚和页码；文档不上传，整次操作可用 ⌘Z 撤销。
 
+## 图片示例
+
+以下为实际设置页面的截图，使用合成示例配置，不包含个人文档或模板。截图用于展示界面；真实 WPS 验收范围见 [验证记录](docs/验证记录.md)。
+
+**标题格式**：设置字体、字号、对齐和首行缩进；全篇段落启用时，行距和段距统一处理。
+
+![标题格式设置示例](docs/images/settings-title.png)
+
+**落款范围**：顶部选择无落款、1 / 2 / 3 段，也可输入 0～99 段；示例选择末尾两段。
+
+![落款段数与格式设置示例](docs/images/settings-signature.png)
+
+**全篇段落**：统一正文区的段落格式，并设置允许西文在单词中间换行。
+
+![全篇段落设置示例](docs/images/settings-paragraph.png)
+
 ## 安装与使用
 
 面向 Apple 芯片 Mac，构建目标为 macOS 13 及以上。普通用户不需要 Python、Node 或编译工具。
@@ -55,6 +71,10 @@ bash scripts/package.sh
 生成合成测试文档：安装开发依赖 `python-docx` 后，在项目根目录运行 `python3 tests/create-fixtures.py`。真实 WPS 验证必须另行执行，包括回读、重复排版和撤销。
 
 源码包采用白名单收集并排除个人文档、配置、日志、字体及历史验收数据；构建缓存与发布包不进入源码仓库。
+
+图片可通过 `scripts/capture-demo-images.cjs` 重建：需要可选开发依赖 `playwright` 和 Google Chrome，运行 `node scripts/capture-demo-images.cjs`。脚本仅使用隔离的合成配置，不连接正在运行的 WPS 服务。
+
+后续 GitHub 开源维护和发布使用仓库内的 [github-open-source-release skill](skills/github-open-source-release/SKILL.md)，流程与项目约定见 [开源发布](docs/开源发布.md)。
 
 ## 反馈与贡献
 

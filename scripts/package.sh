@@ -11,7 +11,7 @@ cp LICENSE "$PACKAGE/许可证.txt"
 hdiutil create -volname "WPS 一键排版" -srcfolder "$PACKAGE" -ov -format UDZO "release/wps-local-formatter-1.1.0-beta.4-arm64.dmg"
 SOURCE="$PACKAGE/wps-local-formatter"
 mkdir -p "$SOURCE"
-cp -R Sources addin scripts tests docs .github README.md CONTRIBUTING.md NOTICE.md LICENSE .gitignore "$SOURCE/"
+cp -R Sources addin scripts tests docs skills .github AGENTS.md README.md CONTRIBUTING.md NOTICE.md LICENSE .gitignore "$SOURCE/"
 # Only reusable source and synthetic generators belong in the public archive.
 find "$SOURCE" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$SOURCE" -type f \( -name '*.docx' -o -name '*.pdf' -o -name '.DS_Store' \) -delete
