@@ -13,3 +13,4 @@ settings.json
 *.ttf
 *.ttc
 *.otf
+node_modules/

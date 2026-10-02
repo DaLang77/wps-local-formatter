@@ -5,5 +5,10 @@
    <button id="OpenSettings" label="排版设置" onAction="OnSettings" size="large" getImage="GetSettingsImage" getSupertip="GetSettingsTip"/>
    <button id="FormatStatus" getLabel="GetStatus" onAction="OnStatus" size="large" getImage="GetStatusImage" getSupertip="GetStatusDetail"/>
   </group>
+  <group id="LocalFormatterReview" label="结构与范围">
+   <dropDown id="FormatterScope" label="排版范围" getItemCount="GetScopeCount" getItemLabel="GetScopeLabel" getItemID="GetScopeID" getSelectedItemIndex="GetSelectedScopeIndex" onAction="OnSelectScope"/>
+   <button id="FormatterStructure" label="文档结构" onAction="OnStructure" getImage="GetSettingsImage"/>
+   <button id="FormatterEnvironment" label="环境检查" onAction="OnEnvironment" getImage="GetSettingsImage"/>
+  </group>
  </tab></tabs></ribbon>
 </customUI>
