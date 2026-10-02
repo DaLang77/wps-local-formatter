@@ -22,7 +22,9 @@ GitHub Actions 检查 Node 22/24、回归、归档白名单与校验，不启动
 
 用 `python3 tests/create-v12-fixtures.py` 生成合成文档（可选开发依赖 python-docx）。涉及排版的修改还须真实 WPS 回读，确认正文、表格、文本框、编号、选区外属性、重复执行和一次撤销。记录系统与 WPS 版本；模拟或成功提示不能代替实际文档证据。
 
-诊断用 `node node-host/cli.mjs host --diagnostics --settings /绝对隔离路径`，只能检查/撤销 `WPS排版*.docx` 合成测试文档。不得自动关闭 WPS或保存真实用户文档。快照只存本地 `evidence/`，不进入公开包。
+在已构建的候选运行目录中，诊断用 `node node-host/cli.mjs host --diagnostics --settings /绝对隔离路径`；须先确认原服务已停止、端口空闲。运行根目录中的 `python3 scripts/live-v12.py analyze notice-analysis --fixture WPS排版v12通知.docx`。脚本核对候选 build-id、插件版本/API/心跳和准确文档名；证据名不能含路径，不覆盖已有文件。检查、接口探测和撤销需要诊断模式；不自动重试修改操作。
+
+不得自动关闭 WPS或保存真实用户文档。快照只存本地 `evidence/`，不进入公开包。
 
 ## 提交范围
 

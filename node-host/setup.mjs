@@ -10,12 +10,27 @@ import { VERSION } from './server.mjs';
 const plugin = 'local-wps-formatter';
 const digest = bytes => bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
 const xmlEscape = value => String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
-export function registrationXML(bytes, { removing = false, version = '1.2.0' } = {}) {
+function parseRegistration(bytes) {
   const text = bytes === null ? '<?xml version="1.0" encoding="UTF-8"?><jsplugins/>' : bytes.toString('utf8');
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('WPS 注册文件含未知 XML 声明，未修改。');
   const document = new DOMParser({ onError(level, message) { throw new Error(`XML ${level}: ${message}`); } }).parseFromString(text, 'application/xml');
   const root = document.documentElement;
   if (!root || root.nodeName !== 'jsplugins' || root.namespaceURI) throw new Error('WPS 插件注册文件结构未知，未修改。');
+  return document;
+}
+const ownedEntries = document => [...document.documentElement.childNodes].filter(child => child.nodeType === 1 && child.getAttribute('name') === plugin);
+function withoutOwned(document) { for(const entry of ownedEntries(document)) document.documentElement.removeChild(entry);return new XMLSerializer().serializeToString(document); }
+export function rollbackRegistrationXML(currentBytes, targetBytes) {
+  const current=parseRegistration(currentBytes),target=parseRegistration(targetBytes),entries=ownedEntries(target).map(entry=>entry.cloneNode(true));
+  const currentOther=withoutOwned(current),targetOther=withoutOwned(target);
+  // An unchanged registration can be restored byte for byte; later third-party
+  // registrations and edits must remain in the live document.
+  if(currentOther===targetOther) return targetBytes;
+  for(const entry of entries) current.documentElement.appendChild(current.importNode(entry,true));
+  return Buffer.from(new XMLSerializer().serializeToString(current));
+}
+export function registrationXML(bytes, { removing = false, version = '1.2.0' } = {}) {
+  const document=parseRegistration(bytes),root=document.documentElement;
   for (const child of [...root.childNodes]) if (child.nodeType === 1 && child.getAttribute('name') === plugin) root.removeChild(child);
   if (!removing) {
     const entry = document.createElement('jspluginonline');
@@ -72,8 +87,12 @@ export class Installer {
       if (bytes !== null) await this.write(path.join(directory,`${key}.backup`),bytes);
       files[key] = { present:bytes !== null, sha256:digest(bytes) };
     }
-    const wasLoaded = await this.platform.loaded(), healthBuildID = wasLoaded ? await this.platform.health() : null;
-    const transaction = { version:1,id,mode,directory,files,wasLoaded,healthBuildID,phase:'snapshot',createdAt:new Date().toISOString(),runtime:null };
+    const wasLoaded = await this.platform.loaded();let healthBuildID=null,healthWasReady=false;
+    if(wasLoaded) {
+      try {healthBuildID=await this.platform.health();healthWasReady=true;}
+      catch { /* A replacement may repair an already unavailable host. */ }
+    }
+    const transaction = { version:1,id,mode,directory,files,wasLoaded,healthBuildID,healthWasReady,phase:'snapshot',createdAt:new Date().toISOString(),runtime:null };
     await this.write(path.join(directory,'snapshot.json'),jsonBytes(transaction));
     await this.journal(transaction,'snapshot'); return transaction;
   }
@@ -83,6 +102,11 @@ export class Installer {
     const bytes = record.present ? await fs.readFile(path.join(transaction.directory,`${key}.backup`)) : null;
     if (digest(bytes) !== record.sha256) throw new Error(`事务快照校验失败：${key}。`);
     return bytes;
+  }
+  async assertBaseline(transaction) {
+    for(const key of ['agent','registration','settings']) {
+      if(digest(await readOptional(this.paths[key])) !== transaction.files[key].sha256) throw new Error('操作期间原设置、插件注册或登录服务文件发生变化，未开始切换。请核对后重新执行。');
+    }
   }
   async readRecord(file) {
     const bytes = await readOptional(file); if (bytes === null) return null;
@@ -95,14 +119,25 @@ export class Installer {
     await this.write(path.join(transaction.directory,'snapshot.json'),jsonBytes(transaction));
     await fs.rm(this.paths.active,{force:true}); await syncDirectory(this.paths.base);
   }
-  async restore(transaction, { settings = false, settingsBytes } = {}) {
+  async restore(transaction, { settings = false, settingsBytes, registrationBytes } = {}) {
     // Verify all backup bytes before changing the live installation.
     const old = {};
     for (const key of ['agent','registration','settings']) old[key] = await this.bytes(transaction,key);
     if (await this.platform.loaded()) await this.platform.stop();
-    await restoreBytes(this.paths.registration,old.registration); await restoreBytes(this.paths.agent,old.agent);
+    await restoreBytes(this.paths.registration,registrationBytes === undefined ? old.registration : registrationBytes); await restoreBytes(this.paths.agent,old.agent);
     if (settings) await restoreBytes(this.paths.settings,settingsBytes === undefined ? old.settings : settingsBytes);
-    if (transaction.wasLoaded) { if (old.agent === null) throw new Error('旧服务快照缺少登录服务文件。'); await this.platform.start(this.paths.agent); await this.platform.health(transaction.healthBuildID); }
+    if (transaction.wasLoaded) {
+      if (old.agent === null) throw new Error('旧服务快照缺少登录服务文件。');
+      await this.platform.start(this.paths.agent);
+      if(!await this.platform.loaded()) throw new Error('原登录服务未恢复加载状态。');
+      if(transaction.healthWasReady !== false) await this.platform.health(transaction.healthBuildID);
+      else {
+        // A failed candidate can be rolled back or uninstalled even when its
+        // HTTP endpoint is down. Restoring that baseline confirms loading,
+        // while retaining the distinction from a verified healthy service.
+        try {await this.platform.health();transaction.restoredHealthy=true;} catch {transaction.restoredHealthy=false;}
+      }
+    }
   }
   async recoverUnlocked() {
     const transaction = await this.readRecord(this.paths.active);
@@ -132,20 +167,24 @@ export class Installer {
   async failed(transaction, original) {
     if(['snapshot','staged','candidate-ready'].includes(transaction.phase)) {
       await this.finish(transaction,'aborted');
-      throw new Error(`操作未完成，原安装状态未变：${original.message}`);
+      const healthNote=transaction.wasLoaded && transaction.healthWasReady===false?'原服务在操作前未就绪，仍需检查。':'';
+      throw new Error(`操作未完成，原安装状态未变：${original.message}${healthNote}`);
     }
     try { await this.restore(transaction,{settings:transaction.settingsChanged === true}); await this.finish(transaction,'restored'); }
     catch (error) { throw new Error(`操作未完成：${original.message}。恢复旧状态也失败：${error.message}。备份：${transaction.directory}`); }
-    throw new Error(`操作未完成，已恢复原安装状态：${original.message}`);
+    const healthNote=transaction.wasLoaded && transaction.healthWasReady===false && transaction.restoredHealthy===false?'原服务在操作前未就绪，已恢复原文件及登录服务加载状态，仍需检查。':'';
+    throw new Error(`操作未完成，已恢复原安装状态：${original.message}${healthNote}`);
   }
   async init() { return this.locked(() => this.initUnlocked()); }
   async initUnlocked() {
     await this.platform.preflight(this.nodePath);
     const recovery = await this.recoverUnlocked();
-    const replacement = registrationXML(await readOptional(this.paths.registration));
+    registrationXML(await readOptional(this.paths.registration));
     const transaction = await this.snapshot('init');
     try {
+      const replacement=registrationXML(await this.bytes(transaction,'registration'));
       const runtime = await this.stage(transaction);
+      await this.platform.preflight(this.nodePath); await this.assertBaseline(transaction);
       await this.journal(transaction,'switch-intent');
       if (transaction.wasLoaded) await this.platform.stop();
       await this.journal(transaction,'old-stopped');
@@ -180,20 +219,27 @@ export class Installer {
     const transaction = await this.snapshot('rollback');
     try {
       const current = await this.preserveModern(transaction.directory), oldAgent = await this.bytes(installed,'agent');
+      const registrationBytes=rollbackRegistrationXML(await readOptional(this.paths.registration),await this.bytes(installed,'registration'));
       let settings = null, restoreSettings = false;
       if (oldAgent?.toString('utf8').includes('WPSFormatter') && current !== null) {
         const raw = JSON.parse(current.toString('utf8'));
         if (raw.current?.version === 2 || raw.templates?.some(item => item.config?.version === 2)) {
-          settings = await readOptional(`${this.paths.settings}.legacy-v1.backup`);
-          if (settings === null) settings = await this.bytes(installed,'settings');
-          if (settings !== null) { const compatible = JSON.parse(settings.toString('utf8')); if (compatible.current?.version !== 1 || compatible.templates?.some(item => item.config?.version !== 1)) throw new Error('没有兼容旧版的配置快照，已保留新配置，未回退。'); }
+          settings = await this.bytes(installed,'settings');
+          if(settings !== null) {
+            const compatible=JSON.parse(settings.toString('utf8'));
+            if(compatible.current?.version !== 1 || compatible.templates?.some(item => item.config?.version !== 1)) settings=await readOptional(`${this.paths.settings}.legacy-v1.backup`);
+            if(settings === null) throw new Error('没有兼容旧版的配置快照，已保留新配置，未回退。');
+            const validated=JSON.parse(settings.toString('utf8'));
+            if(validated.current?.version !== 1 || validated.templates?.some(item => item.config?.version !== 1)) throw new Error('没有兼容旧版的配置快照，已保留新配置，未回退。');
+          }
           restoreSettings = true;
         }
       }
       transaction.settingsChanged = restoreSettings;
+      await this.platform.preflight(this.nodePath); await this.assertBaseline(transaction);
       await this.journal(transaction,'rollback-intent');
       // The init snapshot contains the exact old registration and service state.
-      await this.restore(installed,{settings:restoreSettings,settingsBytes:settings});
+      await this.restore(installed,{settings:restoreSettings,settingsBytes:settings,registrationBytes});
       await this.journal(transaction,'complete'); await this.finish(transaction,'complete');
       return { ok:true,backup:transaction.directory,message:'已恢复初始化前的插件与登录服务，新配置已另存。' };
     } catch (error) { return this.failed(transaction,error); }
@@ -201,9 +247,12 @@ export class Installer {
   async uninstall() { return this.locked(() => this.uninstallUnlocked()); }
   async uninstallUnlocked() {
     await this.platform.preflight(this.nodePath); await this.recoverUnlocked();
-    const oldRegistration = await readOptional(this.paths.registration), replacement = oldRegistration === null ? null : registrationXML(oldRegistration,{removing:true});
+    const oldRegistration = await readOptional(this.paths.registration);
+    if(oldRegistration !== null) registrationXML(oldRegistration,{removing:true});
     const transaction = await this.snapshot('uninstall');
     try {
+      const baseline=await this.bytes(transaction,'registration'),replacement=baseline===null?null:registrationXML(baseline,{removing:true});
+      await this.platform.preflight(this.nodePath); await this.assertBaseline(transaction);
       await this.journal(transaction,'uninstall-intent');
       if (transaction.wasLoaded) await this.platform.stop();
       if (replacement !== null) await this.write(this.paths.registration,replacement);

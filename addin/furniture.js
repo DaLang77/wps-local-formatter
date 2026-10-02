@@ -18,14 +18,29 @@ function split(xml){var p=paragraphs(xml),numbers=[],words=[];p.forEach(function
  if(!/^[\s\d第页共/\-–—]*$/.test(stripped))throw new Error('页脚文字与页码混在同一段，无法单独保留。请同时启用页脚与页码，或先在 WPS 中分行。');numbers.push(s);
  }else words.push(s);});return {words:words,numbers:numbers};}
 // Compare semantic content, not field results (which change with pagination).
+function attribute(tag,key,fallback){var m=new RegExp('\\bw:'+key+'\\s*=\\s*["\\\']([^"\\\']*)["\\\']').exec(tag||'');return m?m[1]:fallback;}
+function tag(xml,name){return (String(xml).match(new RegExp('<w:'+name+'\\b[^>]*>'))||[''])[0];}
+function number(value){return value===''?'':isFinite(Number(value))?Number(value):value;}
+function characterFormat(xml,inherited){
+ inherited=inherited||['','','','','','','',''];var f=tag(xml,'rFonts'),sz=attribute(tag(xml,'sz'),'val',inherited[6]);
+ return ['ascii','hAnsi','eastAsia','asciiTheme','hAnsiTheme','eastAsiaTheme'].map(function(k,i){return attribute(f,k,inherited[i]);})
+   .concat([number(sz),number(attribute(tag(xml,'szCs'),'val',inherited[7]||sz))]);
+}
+function spacing(xml){var s=tag(xml,'spacing');return ['before','after','line','lineRule','beforeAutospacing','afterAutospacing','beforeLines','afterLines'].map(function(k){
+ var value=attribute(s,k,k==='line'?'240':k==='lineRule'?'auto':'0');
+ return /Autospacing$/.test(k)?/^(1|true|on)$/i.test(value):k==='lineRule'?value:number(value);
+});}
 function signature(xml){var p=paragraphs(xml);return p.map(function(s){
  var codes=[],inField=false,parts=[];var tokens=s.match(/<[^>]+>|[^<]+/g)||[];var capture='';
  tokens.forEach(function(t){if(/<w:fldChar\b[^>]*w:fldCharType="begin"/.test(t))inField=true;if(/<w:instrText\b/.test(t))capture='code';else if(/<w:t(?:\s|>)/.test(t))capture='text';else if(t[0]==='<')capture='';else if(capture==='code')codes.push(t.trim().replace(/\s+/g,' '));else if(capture==='text'&&!inField)parts.push(t);if(/<w:fldChar\b[^>]*w:fldCharType="end"/.test(t))inField=false;});
  var jc=(s.match(/<w:jc\b[^>]*w:val="([^"]+)"/)||[])[1]||'left';
- var sizes=(s.match(/<w:sz\b[^>]*w:val="([^"]+)"/)||[])[1]||'';
- var font=(s.match(/<w:rFonts\b[^>]*w:eastAsia="([^"]+)"/)||[])[1]||'';
  if(!parts.join('')&&!codes.length)return 'empty';
- return JSON.stringify([parts.join(''),codes,jc,sizes,font]);}).join('|');}
+ var ppr=(s.match(/<w:pPr\b[^>]*>[\s\S]*?<\/w:pPr>/)||[''])[0],base=characterFormat(ppr),formats=[];
+ var runs=s.replace(ppr,'').match(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g)||[];
+ runs.forEach(function(r){var format=characterFormat(r,base);if(!formats.length||JSON.stringify(formats[formats.length-1])!==JSON.stringify(format))formats.push(format);});
+ // WPS may split uniform runs or omit redundant paragraph-mark properties.
+ var mark=characterFormat(ppr,formats[formats.length-1]||base);
+ return JSON.stringify([parts.join(''),codes,jc,spacing(ppr),mark,formats]);}).join('|');}
 function truth(v){return v===true||v===-1||v===1;}
 function empty(r){return !String(r.Text).trim()&&Number(r.Fields.Count)===0;}
 function plan(doc,c){if(!c.header.enabled&&!c.footer.enabled&&!c.number.enabled)return {operations:[],properties:[]};

@@ -8,7 +8,7 @@ import { FormatterError, copy, object, readOptional } from './io.mjs';
 import { DOMParser } from '@xmldom/xmldom';
 
 export const VERSION = '1.2.0-beta.1';
-export const STATIC_FILES = new Set(['index.html','furniture.js','core.js','main.js','ribbon.xml','manifest.xml','format.png','config.js','settings.html','settings.js','settings.css','result.html','result.js','result.css','structure.html','structure.js','structure.css','environment.html','environment.js','environment.css','icons/format.svg','icons/settings.svg','icons/result.svg']);
+export const STATIC_FILES = new Set(['index.html','furniture.js','core.js','main.js','ribbon.xml','manifest.xml','config.js','settings.html','settings.js','settings.css','result.html','result.js','result.css','structure.html','structure.js','structure.css','environment.html','environment.js','environment.css','icons/format.svg','icons/settings.svg','icons/result.svg']);
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const operations = new Set(['analyze','preview','extract','set-role','scope','format']);
 const diagnostics = new Set(['inspect','undo','probe']);
@@ -37,12 +37,12 @@ export function createHost({ staticDir = fileURLToPath(new URL('../addin/', impo
   if (host !== '127.0.0.1') throw new Error('服务只能绑定 127.0.0.1。');
   const store = suppliedStore || new SettingsStore({ file: settingsPath, configModule });
   const token = randomBytes(32).toString('hex'), started = clock();
-  const state = { latest: {}, lastPulse: null, pending: null, pendingAt: null, busy: '', result: {}, consumed: false };
+  const state = { latest: {}, lastPulse: null, pending: null, pendingAt: null, busy: '', result: {} };
   let boundPort = port;
   function refresh() {
     if (state.pending && clock() - state.pendingAt > 10_000) {
       state.result = { id: state.busy, ok: false, message: 'WPS 未领取操作，请检查连接后重新发起。', expired: true };
-      state.pending = null; state.busy = ''; state.consumed = false;
+      state.pending = null; state.busy = '';
     }
   }
   function status() {
@@ -99,7 +99,7 @@ export function createHost({ staticDir = fileURLToPath(new URL('../addin/', impo
     if (data.role !== undefined) command.role = string(data.role, '段落角色', 100);
     if (op === 'set-role' && (command.index === undefined || command.role === undefined || command.fingerprint === undefined)) throw new FormatterError('缺少段落序号、角色或文档指纹。');
     if (diagnostics.has(op)) command.diagnostic = true;
-    state.busy = command.id; state.pending = command; state.pendingAt = clock(); state.consumed = false;
+    state.busy = command.id; state.pending = command; state.pendingAt = clock();
     return { id: command.id };
   }
   const server = http.createServer({ maxHeaderSize: 16_384, requestTimeout: 10_000, headersTimeout: 10_000 }, async (request, response) => {
@@ -145,19 +145,19 @@ export function createHost({ staticDir = fileURLToPath(new URL('../addin/', impo
         clean.fonts = Array.isArray(data.fonts) && data.fonts.length <= 10000 && data.fonts.every(font => typeof font === 'string' && font.length <= 200) ? [...new Set(data.fonts)] : null;
         state.latest = clean; state.lastPulse = clock();
         if (state.pending && (clean.bridgeVersion !== VERSION || !clean.apiReady || !clean.documentOpen || String(clean.docID) !== state.pending.docID)) {
-          state.result = {id:state.busy,ok:false,message:'WPS 插件或当前文档已经切换，未开始操作。'};state.pending=null;state.busy='';state.consumed=false;send(200,{});
+          state.result = {id:state.busy,ok:false,message:'WPS 插件或当前文档已经切换，未开始操作。'};state.pending=null;state.busy='';send(200,{});
         }
-        else if (state.pending) { const command = state.pending; state.pending = null; state.consumed = true; send(200, { command }); }
+        else if (state.pending) { const command = state.pending; state.pending = null; send(200, { command }); }
         else send(200, {});
       } else if (route === '/result') {
-        if (typeof data.id !== 'string' || data.id !== state.busy || !state.consumed) throw new FormatterError('stale result', 409);
-        state.result = copy(data); state.busy = ''; state.pending = null; state.consumed = false; send(200, { accepted: true });
+        if (typeof data.id !== 'string' || !state.busy || data.id !== state.busy || state.pending !== null) throw new FormatterError('stale result', 409);
+        state.result = copy(data); state.busy = ''; state.pending = null; send(200, { accepted: true });
       } else if (route === '/ui-result') { state.result = copy(data); send(200, { accepted: true }); }
       else throw new FormatterError('not found', 404);
     } catch (error) { send(error.status || 500, { error: error.status ? error.message : '本地服务操作失败，请检查文件权限或设置文件。' }); }
   });
   server.on('clientError', (_, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); });
-  return { server, store, state, status, environment,
+  return { server,
     async start() { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, () => { server.off('error', reject); boundPort = server.address().port; resolve(); }); }); return { host, port: boundPort, token }; },
     async close() { server.closeIdleConnections(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   };

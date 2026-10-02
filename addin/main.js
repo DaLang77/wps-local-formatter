@@ -2,11 +2,13 @@
 var bridgeToken='', bridgeBusy=false, bridgeTimer=null;
 var BRIDGE_VERSION='1.2.0-beta.1';
 var documentSession={docID:'',scope:'document',fingerprint:null,overrides:{},needsReview:false};
-var contentDirty=false,eventsRegistered=false,lastStructureCheck=0;
+var contentDirty=false,eventsRegistered=false,activationEventsRegistered=false,lastStructureCheck=0;
+var sessionGeneration=0;
 function hasOverrides(){return Object.keys(documentSession.overrides).length>0;}
 function syncDocument(doc){
   var id=doc?String(doc.DocID):'';
   if(id!==documentSession.docID){
+    sessionGeneration++;
     var marked=hasOverrides()||documentSession.needsReview;
     documentSession={docID:id,scope:'document',fingerprint:null,overrides:{},needsReview:marked};
     contentDirty=false;
@@ -18,12 +20,26 @@ function operationContext(scope,allowReview){
   if(!doc)throw new Error('请先打开 Word 文档。');
   var context=typeof FormatterCore.captureContext==='function'?FormatterCore.captureContext(app,scope||documentSession.scope):{docID:String(doc.DocID),scope:scope||documentSession.scope};
   if(hasOverrides()&&context.fingerprint!==documentSession.fingerprint){
+    sessionGeneration++;
     documentSession.overrides={};documentSession.needsReview=true;
     notify('文字或段落结构已变化，人工标记已失效。请重新检查文档结构。','info');
   }
   if(documentSession.needsReview&&!allowReview)throw new Error('人工标记已失效，请打开“文档结构”重新检查后再排版。');
   context.overrides=Object.assign({},documentSession.overrides);
+  context.sessionGeneration=sessionGeneration;
   return context;
+}
+function assertSessionContext(context,allowReview){
+  var doc=application().ActiveDocument;syncDocument(doc);
+  if(!doc||String(doc.DocID)!==String(context.docID))throw new Error('当前文档已经切换，未开始排版。');
+  if(documentSession.needsReview&&!allowReview)throw new Error('人工标记已失效，请打开“文档结构”重新检查后再排版。');
+  if(context.sessionGeneration!==sessionGeneration)throw new Error('文档发生编辑或切换，未开始排版。请检查后重新点击排版。');
+}
+function onContentChange(){
+  contentDirty=true;sessionGeneration++;
+  // Check at the event, before a later Undo can restore the old fingerprint.
+  // Pure formatting events leave matching role overrides intact.
+  if(hasOverrides())try{operationContext('document',true);}catch(ignore){}
 }
 function application() {
   if(typeof wps!=='undefined' && typeof wps.WpsApplication==='function') return wps.WpsApplication();
@@ -94,7 +110,10 @@ function probeAPIs(app,doc){
   out.restored=keys.every(function(k,i){return pf[k]===before[i];});return out;
 }
 function analyzeDocument(config){
-  var context=operationContext('document',true),rows=FormatterCore.analyze(FormatterCore.readParagraphs(application().ActiveDocument),config,context.overrides);
+  var context=operationContext('document',true),paragraphs=FormatterCore.readParagraphs(application().ActiveDocument);
+  // Analysis is also the user's way to acknowledge invalidated role markings.
+  assertSessionContext(context,true);
+  var rows=FormatterCore.analyze(paragraphs,config,context.overrides);
   var invalidated=documentSession.needsReview;
   documentSession.fingerprint=context.fingerprint;documentSession.needsReview=false;
   return {docID:context.docID,fingerprint:context.fingerprint,paragraphs:rows,scope:documentSession.scope,sessionInvalidated:invalidated,message:invalidated?'人工标记已清除，请检查下列识别结果。':''};
@@ -108,10 +127,14 @@ function execute(command) {
     syncDocument(d);
     if(command.op==='format'){
       var context=operationContext(command.scope||documentSession.scope,false);
+      assertSessionContext(context);
       result=Object.assign(result,FormatterCore.apply(app,command.config||Number(command.count),command.docID,context));
     }
     else if(command.op==='analyze')result=Object.assign(result,{ok:true,analysis:analyzeDocument(command.config||settingsState.current)});
-    else if(command.op==='preview')result=Object.assign(result,{ok:true,preview:FormatterCore.preview(app,command.config||settingsState.current,operationContext(command.scope||documentSession.scope,false))});
+    else if(command.op==='preview'){
+      var previewContext=operationContext(command.scope||documentSession.scope,false);assertSessionContext(previewContext);
+      result=Object.assign(result,{ok:true,preview:FormatterCore.preview(app,command.config||settingsState.current,previewContext)});
+    }
     else if(command.op==='extract'){
       var extracted=FormatterCore.extract(app);result=Object.assign(result,{ok:true,extracted:extracted.format?extracted:{format:extracted,warnings:[]}});
     }
@@ -121,10 +144,12 @@ function execute(command) {
     }
     else if(command.op==='set-role'){
       var captured=operationContext('document',true);
+      if(documentSession.needsReview)throw new Error('人工标记已失效，请重新读取文档结构后再指定角色。');
       if(command.fingerprint!==captured.fingerprint)throw new Error('文字或段落结构已变化，请重新读取文档结构。');
       if(!/^(title|body|addressee|signature|heading[1-9]|preserve|auto)$/.test(command.role))throw new Error('段落角色无效。');
       var paras=FormatterCore.readParagraphs(d),paragraph=paras.filter(function(p){return p.index===Number(command.index);})[0];
       if(!paragraph||paragraph.story!==1||paragraph.table)throw new Error('此段不属于可排版的正文区。');
+      sessionGeneration++;
       if(command.role==='auto')delete documentSession.overrides[command.index];else documentSession.overrides[command.index]=command.role;
       documentSession.fingerprint=captured.fingerprint;documentSession.needsReview=false;
       result=Object.assign(result,{ok:true,analysis:analyzeDocument(command.config||settingsState.current)});
@@ -192,28 +217,19 @@ function OnAddinLoad(ribbon) {
   ribbonUI=ribbon;if(bridgeTimer)clearInterval(bridgeTimer);
   if(!eventsRegistered)try{
     var events=wps.ApiEvent;
-    events.AddApiEventListener('ContentChange',function(){contentDirty=true;});
+    events.AddApiEventListener('ContentChange',onContentChange);
     events.AddApiEventListener('DocumentAfterClose',function(){syncDocument(null);});
     events.AddApiEventListener('DocumentOpen',function(doc){syncDocument(null);syncDocument(doc);});
     eventsRegistered=true;
   }catch(ignore){}
+  // Optional activation events catch round trips between already-open documents.
+  // Register independently so unsupported events cannot disable other listeners.
+  if(!activationEventsRegistered)try{
+    wps.ApiEvent.AddApiEventListener('WindowActivate',function(doc){
+      try{syncDocument(doc&&doc.DocID!==undefined?doc:application().ActiveDocument);}catch(ignore){}
+    });activationEventsRegistered=true;
+  }catch(ignore){}
   bridgeTimer=setInterval(function(){tick();if(!bridgeBusy)refreshSettings();},1500);tick();refreshSettings();return true;
-}
-function GetTemplateCount(){return settingsState?settingsState.templates.length:1;}
-function GetTemplateLabel(control,index){var t=settingsState&&settingsState.templates[Number(index)];return t?t.name:'加载中…';}
-function GetTemplateID(control,index){var t=settingsState&&settingsState.templates[Number(index)];return t?t.id:'loading';}
-function GetSelectedTemplateIndex(){
-  if(!settingsState)return 0;
-  for(var i=0;i<settingsState.templates.length;i++)if(settingsState.templates[i].id===settingsState.activeTemplateID)return i;
-  return 0;
-}
-function OnSelectTemplate(control,id,index){
-  if(!settingsState||bridgeBusy)return true;
-  if(index===undefined&&control)index=control.SelectedItemIndex;
-  var t=settingsState.templates.filter(function(t){return t.id===id;})[0]||settingsState.templates[Number(index)];
-  if(!t){notify('模板选择未识别，请重新选择。','error');return true;}
-  bridgeBusy=true;
-  api('/templates/select',{revision:settingsState.revision,id:t.id},function(error,state){bridgeBusy=false;if(error){notify(error.message,'error');return;}settingsState=state;notify('已选择“'+t.name+'” · 点击一键排版才应用');});return true;
 }
 function GetScopeCount(){return 2;}
 function GetScopeLabel(control,index){return Number(index)===1?'选中段落':'整篇文档';}
@@ -232,7 +248,7 @@ function OnFormat(){
   api('/settings',null,function(error,state){
     if(error){bridgeBusy=false;notify(error.message,'error');return;}
     settingsState=state;
-    try{var result=FormatterCore.apply(application(),state.current,id,context);notify(result.message,result.ok?'success':'error');request('/ui-result',result,function(){});}
+    try{assertSessionContext(context);var result=FormatterCore.apply(application(),state.current,id,context);notify(result.message,result.ok?'success':'error');request('/ui-result',result,function(){});}
     catch(e){notify(String(e.message||e),'error');request('/ui-result',{ok:false,message:String(e.message||e)},function(){});}
     finally{bridgeBusy=false;}
   });return true;

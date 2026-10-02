@@ -29,7 +29,6 @@ async function main() {
         const environment = await fetch(`${origin}/environment`,{headers:{'X-Formatter-Token':session.token}});
         if (!environment.ok) throw new Error((await environment.json()).error || '配置读取失败。');
         for (const name of STATIC_FILES) {
-          if (!STATIC_FILES.has(name)) throw new Error('静态文件列表无效。');
           const response = await fetch(`${origin}/${name}`), bytes = Buffer.from(await response.arrayBuffer());
           if (!response.ok || !bytes.equals(await fs.readFile(path.join(staticDir,name)))) throw new Error(`资源校验失败：${name}`);
         }

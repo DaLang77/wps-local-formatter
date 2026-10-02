@@ -86,3 +86,62 @@ test('exclusive installer lock prevents concurrent mutation and recovers dead PI
   await fs.writeFile(f.paths.lock,JSON.stringify({pid:99999999,id:'dead-lock'}));const recovery=new f.Installer({home:f.home,sourceRoot:f.source,platform:f.platform,processAlive:()=>false});assert.equal((await recovery.recover()).recovered,false);assert.equal(await fs.readFile(f.paths.lock).catch(e=>e.code),'ENOENT');
   assert.throws(()=>new f.Installer({home:f.home,nodePath:'node'}),/绝对路径/);
 });
+test('rollback and uninstall remain available when the installed candidate HTTP endpoint is broken',async t=>{
+  for(const operation of ['rollback','uninstall']) {
+    const f=await fixture(t);await f.installer.init();const healthy=f.platform.health;
+    f.platform.health=async expected=>{
+      if(expected===undefined && (await fs.readFile(f.paths.agent,'utf8')).includes('node-host/cli.mjs'))throw new Error('broken-current-node-http');
+      return healthy(expected);
+    };
+    const result=await f.installer[operation]();assert.equal(result.ok,true);
+    if(operation==='rollback') {await f.unchanged();assert.equal(f.loaded,true);assert.deepEqual(f.calls.at(-1),['health','old-build']);}
+    else {assert.equal(f.loaded,false);assert.equal(await fs.readFile(f.paths.agent).catch(e=>e.code),'ENOENT');assert.deepEqual(await fs.readFile(f.paths.settings),f.old.settings);}
+  }
+});
+test('failed uninstall restores an originally unhealthy service loading state without claiming HTTP recovery',async t=>{
+  const f=await fixture(t);await f.installer.init();const beforeAgent=await fs.readFile(f.paths.agent),beforeRegistration=await fs.readFile(f.paths.registration);
+  f.platform.health=async()=>{throw new Error('original-http-unavailable');};
+  const installer=new f.Installer({home:f.home,sourceRoot:f.source,platform:f.platform,checkpoint:async phase=>{if(phase==='uninstall-intent')throw new Error('forced-uninstall-failure');}});
+  await assert.rejects(installer.uninstall(),/原服务在操作前未就绪.*仍需检查/);
+  assert.equal(f.loaded,true);assert.deepEqual(await fs.readFile(f.paths.agent),beforeAgent);assert.deepEqual(await fs.readFile(f.paths.registration),beforeRegistration);assert.deepEqual(await fs.readFile(f.paths.settings),f.old.settings);
+});
+test('rollback preserves unrelated registrations added or edited after installation',async t=>{
+  const f=await fixture(t);await f.installer.init();let registration=await fs.readFile(f.paths.registration,'utf8');
+  registration=registration.replace('http://example.invalid/','http://updated-after-install.invalid/').replace('</jsplugins>','<jspluginonline name="new-independent-plugin" url="http://later.invalid/"/></jsplugins>');await fs.writeFile(f.paths.registration,registration);
+  await f.installer.rollback();const restored=await fs.readFile(f.paths.registration,'utf8');
+  assert.match(restored,/name="other" url="http:\/\/updated-after-install.invalid\/"/);assert.match(restored,/name="new-independent-plugin"/);assert.match(restored,/name="local-wps-formatter" url="http:\/\/old\/"/);assert.deepEqual(await fs.readFile(f.paths.settings),f.old.settings);assert.deepEqual(await fs.readFile(f.paths.agent),f.old.agent);
+});
+test('repeated migration and rollback uses the latest compatible install snapshot instead of a stale global backup',async t=>{
+  const f=await fixture(t),{SettingsStore}=await import('../node-host/store.mjs');await f.installer.init();await new SettingsStore({file:f.paths.settings}).mutate('/settings/save',{revision:3,config:modern()});await f.installer.rollback();
+  const changed=JSON.parse(f.old.settings.toString('utf8'));changed.revision=5;changed.current.body.size=16;changed.templates[0].config.body.size=16;const expected=Buffer.from(JSON.stringify(changed));await fs.writeFile(f.paths.settings,expected);
+  await f.installer.init();await new SettingsStore({file:f.paths.settings}).mutate('/settings/save',{revision:5,config:modern()});await f.installer.rollback();
+  assert.deepEqual(await fs.readFile(f.paths.settings),expected);assert.deepEqual(await fs.readFile(`${f.paths.settings}.legacy-v1.backup`),f.old.settings);
+});
+test('init aborts before stopping the old service if WPS is reopened during candidate checks',async t=>{
+  const f=await fixture(t),original=f.platform.preflight;let checks=0;
+  f.platform.preflight=async node=>{if(++checks>1)throw new Error('WPS 在自检期间重新打开，请先保存并退出。');return original(node);};
+  await assert.rejects(f.installer.init(),/原安装状态未变.*WPS 在自检期间/);await f.unchanged();assert.equal(f.calls.some(call=>call[0]==='stop'),false);
+});
+test('init preserves a concurrent external registration update rather than overwriting it with a stale snapshot',async t=>{
+  const f=await fixture(t),candidate=f.platform.candidate;let changed;
+  f.platform.candidate=async(...args)=>{await candidate(...args);changed=Buffer.from(f.old.registration.toString().replace('</jsplugins>','<jspluginonline name="concurrent-other-plugin"/></jsplugins>'));await fs.writeFile(f.paths.registration,changed);};
+  await assert.rejects(f.installer.init(),/文件发生变化.*未开始切换/);assert.deepEqual(await fs.readFile(f.paths.registration),changed);assert.deepEqual(await fs.readFile(f.paths.agent),f.old.agent);assert.deepEqual(await fs.readFile(f.paths.settings),f.old.settings);assert.equal(f.calls.some(call=>call[0]==='stop'),false);
+});
+test('init repairs an unavailable old Node host with a healthy candidate while preserving settings',async t=>{
+  const f=await fixture(t);await f.installer.init();const previousAgent=await fs.readFile(f.paths.agent),beforeSettings=await fs.readFile(f.paths.settings),health=f.platform.health;
+  f.platform.health=async expected=>{if(expected===undefined)throw new Error('old-node-path-unavailable');return health(expected);};
+  const result=await f.installer.init();assert.equal(result.ok,true);assert.equal(f.loaded,true);assert.notDeepEqual(await fs.readFile(f.paths.agent),previousAgent);assert.deepEqual(await fs.readFile(f.paths.settings),beforeSettings);
+  const record=JSON.parse(await fs.readFile(path.join(result.backup,'snapshot.json'),'utf8'));assert.equal(record.healthWasReady,false);assert.equal(record.wasLoaded,true);assert.deepEqual(await fs.readFile(path.join(result.backup,'agent.backup')),previousAgent);assert.deepEqual(f.calls.at(-1),['health','candidate-build-123\n']);
+});
+test('failed init candidate retains the previously unavailable Node state and reports that it still needs repair',async t=>{
+  const f=await fixture(t);await f.installer.init();const oldAgent=await fs.readFile(f.paths.agent),oldRegistration=await fs.readFile(f.paths.registration),oldSettings=await fs.readFile(f.paths.settings);
+  f.platform.health=async()=>{throw new Error('old-node-http-unavailable');};f.platform.candidate=async()=>{throw new Error('new-candidate-selftest-failed');};const stopsBefore=f.calls.filter(call=>call[0]==='stop').length;
+  await assert.rejects(f.installer.init(),/原安装状态未变.*new-candidate-selftest-failed.*原服务在操作前未就绪.*仍需检查/);
+  assert.equal(f.loaded,true);assert.equal(f.calls.filter(call=>call[0]==='stop').length,stopsBefore);assert.deepEqual(await fs.readFile(f.paths.agent),oldAgent);assert.deepEqual(await fs.readFile(f.paths.registration),oldRegistration);assert.deepEqual(await fs.readFile(f.paths.settings),oldSettings);
+});
+test('failed candidate startup restores an originally unavailable Node host without claiming HTTP recovery',async t=>{
+  const f=await fixture(t);await f.installer.init();const oldAgent=await fs.readFile(f.paths.agent),oldRegistration=await fs.readFile(f.paths.registration),oldSettings=await fs.readFile(f.paths.settings);
+  f.platform.health=async()=>{throw new Error('host-unavailable');};
+  await assert.rejects(f.installer.init(),/已恢复原安装状态.*原服务在操作前未就绪.*仍需检查/);
+  assert.equal(f.loaded,true);assert.deepEqual(await fs.readFile(f.paths.agent),oldAgent);assert.deepEqual(await fs.readFile(f.paths.registration),oldRegistration);assert.deepEqual(await fs.readFile(f.paths.settings),oldSettings);
+});

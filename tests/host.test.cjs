@@ -54,6 +54,7 @@ test('environment checks heading fonts and bridge mismatches; legacy count is va
 });
 test('queue validates context, delivers once, rejects stale results, and preserves request fields',async t=>{
   const f=await fixture(t,{port:0});
+  assert.equal((await f.call('/result',{id:'',ok:true})).status,409);
   assert.equal((await f.call('/request',{op:'analyze',docID:'42'})).status,409);
   await f.pulse();assert.equal((await f.call('/request',{op:'analyze',docID:'other'})).status,409);
   const request=await f.call('/request',{op:'set-role',docID:'42',scope:'selection',fingerprint:'abc',index:2,role:'title'});
@@ -64,19 +65,25 @@ test('queue validates context, delivers once, rejects stale results, and preserv
   assert.deepEqual((await f.pulse()).data,{});
   assert.equal((await f.call('/result',{id:'stale',ok:true})).status,409);
   assert.equal((await f.call('/result',{id,ok:true,message:'完成'})).status,200);
+  assert.equal((await f.call('/result',{id,ok:true,message:'重复结果'})).status,409);
+  assert.equal((await f.call('/result',{id:'',ok:true})).status,409);
   const state=(await f.call('/state')).data;assert.equal(state.busy,'');assert.equal(state.resultID,id);
+  assert.equal(state.result.message,'完成');
 });
 test('unclaimed request expires once; claimed mutations remain busy without automatic retry',async t=>{
   let now=1000;const f=await fixture(t,{port:0,clock:()=>now});await f.pulse();
   const a=(await f.call('/request',{op:'format',docID:'42'})).data;now+=10001;
   let state=(await f.call('/state')).data;assert.equal(state.busy,'');assert.equal(state.result.id,a.id);assert.equal(state.result.expired,true);
+  assert.equal((await f.call('/result',{id:a.id,ok:true})).status,409);
   await f.pulse();const b=(await f.call('/request',{op:'format',docID:'42'})).data;await f.pulse();now+=120000;
   state=(await f.call('/state')).data;assert.equal(state.busy,b.id);assert.deepEqual((await f.pulse()).data,{});
 });
 test('document or bridge switching before poll cancels the unclaimed operation',async t=>{
   const f=await fixture(t,{port:0});await f.pulse();const request=(await f.call('/request',{op:'format',docID:'42'})).data;
   assert.deepEqual((await f.pulse({docID:'other'})).data,{});let state=(await f.call('/state')).data;assert.equal(state.busy,'');assert.equal(state.result.id,request.id);assert.equal(state.result.ok,false);
-  await f.pulse();await f.call('/request',{op:'format',docID:'42'});assert.deepEqual((await f.pulse({bridgeVersion:'old'})).data,{});state=(await f.call('/state')).data;assert.equal(state.busy,'');assert.equal(state.result.ok,false);
+  assert.equal((await f.call('/result',{id:request.id,ok:true})).status,409);
+  await f.pulse();const switched=(await f.call('/request',{op:'format',docID:'42'})).data;assert.deepEqual((await f.pulse({bridgeVersion:'old'})).data,{});state=(await f.call('/state')).data;assert.equal(state.busy,'');assert.equal(state.result.ok,false);
+  assert.equal((await f.call('/result',{id:switched.id,ok:true})).status,409);
 });
 test('diagnostics require opt-in and synthetic documents, read-only mutations are rejected',async t=>{
   const normal=await fixture(t,{port:0});await normal.pulse({title:'WPS排版测试.docx'});
