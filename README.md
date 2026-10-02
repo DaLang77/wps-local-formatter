@@ -9,7 +9,7 @@ Mac 本地 WPS 文字插件。按模板统一标题、正文、落款、页面�
 
 面向 Apple 芯片 Mac，构建目标为 macOS 13 及以上。普通用户不需要 Python、Node 或编译工具。
 
-1. 从 [GitHub 发布页](https://github.com/DaLang77/wps-local-formatter/releases/tag/v1.1.0-beta.4) 下载 `WPS一键排版-1.1.0-beta.4-arm64.dmg`。
+1. 从 [GitHub 发布页](https://github.com/DaLang77/wps-local-formatter/releases/tag/v1.1.0-beta.4) 下载 `wps-local-formatter-1.1.0-beta.4-arm64.dmg`。
 2. 保存文档并退出 WPS。打开 DMG 中的应用，选择「安装 / 更新」。
 3. 重新打开 WPS 文档，在「一键排版 → 排版设置」配置格式；点「排版结果」查看完整信息。
 4. 保存设置，回到文档点击「一键排版」。检查后自行保存文档。

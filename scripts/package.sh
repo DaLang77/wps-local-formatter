@@ -8,7 +8,7 @@ trap 'rm -rf "$PACKAGE"' EXIT
 cp -R "dist/WPS一键排版.app" "$PACKAGE/"
 cp docs/安装说明.md "$PACKAGE/安装说明.md"
 cp LICENSE "$PACKAGE/许可证.txt"
-hdiutil create -volname "WPS 一键排版" -srcfolder "$PACKAGE" -ov -format UDZO "release/WPS一键排版-1.1.0-beta.4-arm64.dmg"
+hdiutil create -volname "WPS 一键排版" -srcfolder "$PACKAGE" -ov -format UDZO "release/wps-local-formatter-1.1.0-beta.4-arm64.dmg"
 SOURCE="$PACKAGE/wps-local-formatter"
 mkdir -p "$SOURCE"
 cp -R Sources addin scripts tests docs .github README.md CONTRIBUTING.md NOTICE.md LICENSE .gitignore "$SOURCE/"
@@ -27,5 +27,5 @@ with zipfile.ZipFile(sys.argv[2], 'w', compression=zipfile.ZIP_DEFLATED) as arch
 PYZIP
 (
     cd release
-    shasum -a 256 WPS一键排版-1.1.0-beta.4-arm64.dmg wps-local-formatter-1.1.0-beta.4-source.zip > SHA256SUMS.txt
+    shasum -a 256 wps-local-formatter-1.1.0-beta.4-arm64.dmg wps-local-formatter-1.1.0-beta.4-source.zip > SHA256SUMS.txt
 )
