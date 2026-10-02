@@ -84,7 +84,7 @@ for(var i=0;i<9;i++){
  field(fields,key+'.font','字体','text');field(fields,key+'.size','字号（磅）','number');field(fields,key+'.alignment','对齐方式','select',[['','保持原样'],['0','左对齐'],['1','居中'],['2','右对齐'],['3','两端对齐']]);field(fields,key+'.indent','首行缩进（字符）','number');
  field(fields,key+'.line.mode','行距','select',[['','保持原样'],['single','单倍'],['oneHalf','1.5 倍'],['double','双倍'],['multiple','多倍'],['exact','固定值'],['atLeast','最小值']]);field(fields,key+'.line.value','行距数值（多倍填倍数，其余填磅）','number');field(fields,key+'.before','段前间距（磅）','number');field(fields,key+'.after','段后间距（磅）','number');group.appendChild(fields);headingsPanel.appendChild(group);
 }
-headingsPanel.appendChild(el('p',{class:'hint'},'已有样式和大纲层级优先识别；未识别段落回退到首尾规则。可在“文档结构”中人工纠正。'));document.getElementById('panels').appendChild(headingsPanel);
+headingsPanel.appendChild(el('p',{class:'hint'},'选择“优先样式和大纲层级”时，读取已有标题样式和大纲级别；未识别段落回退到首尾规则。可在“文档结构”中人工纠正。'));document.getElementById('panels').appendChild(headingsPanel);
 function setHeadingLevel(value){headingLevel=Math.max(0,Math.min(8,value));levelSelect.value=String(headingLevel);document.querySelectorAll('.heading-fields').forEach(function(n,i){n.hidden=i!==headingLevel;});}
 levelSelect.onchange=function(){setHeadingLevel(Number(this.value));};
 var rulesPanel=el('section',{class:'panel',id:'panel-rules','aria-label':'识别与分页'});rulesPanel.hidden=true;rulesPanel.appendChild(el('h2',{},'识别与分页'));

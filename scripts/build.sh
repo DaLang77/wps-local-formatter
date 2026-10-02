@@ -11,6 +11,7 @@ trap 'rm -rf "$STAGE"' EXIT
 cp -R addin node-host node_modules "$STAGE/"
 cp package.json package-lock.json LICENSE NOTICE.md "$STAGE/"
 cp docs/安装说明.md "$STAGE/使用说明.md"
+cp docs/验证记录.md "$STAGE/验证记录.md"
 cp 初始化.command 环境检查.command 回退.command 卸载.command "$STAGE/"
 node scripts/build-id.cjs "$STAGE"
 rm -rf "$DEST"
