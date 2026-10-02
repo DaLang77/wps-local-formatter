@@ -1,0 +1,9 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+ <ribbon startFromScratch="false"><tabs><tab id="LocalFormatter" label="一键排版">
+  <group id="LocalFormatterActions" label="文书排版">
+   <button id="LocalFormatterRun" label="一键排版" onAction="OnFormat" size="large" getImage="GetFormatImage" getSupertip="GetFormatTip"/>
+   <button id="OpenSettings" label="排版设置" onAction="OnSettings" size="large" getImage="GetSettingsImage" getSupertip="GetSettingsTip"/>
+   <button id="FormatStatus" getLabel="GetStatus" onAction="OnStatus" size="large" getImage="GetStatusImage" getSupertip="GetStatusDetail"/>
+  </group>
+ </tab></tabs></ribbon>
+</customUI>

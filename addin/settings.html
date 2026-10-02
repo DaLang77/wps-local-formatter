@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>排版设置</title><link rel="stylesheet" href="settings.css"><script src="config.js" defer></script><script src="settings.js" defer></script></head>
+<body><main>
+<header><div><h1>排版设置</h1><p>保存后，回到文档点击「一键排版」应用。</p></div><span id="templateLabel" class="badge">正在加载</span></header>
+<div id="feedback" role="status" aria-live="polite"></div>
+<form id="settingsForm" novalidate>
+<div class="template-picker"><span class="template-heading">排版模板</span><div id="templateSelect" class="template-options" role="group" aria-label="排版模板">正在加载…</div><span>选择后载入设置</span></div>
+<fieldset id="areaNavigation" class="navigation"><legend class="sr-only">设置区域</legend>
+<label><input type="radio" name="area" value="title" checked><span>标题</span></label>
+<label><input type="radio" name="area" value="body"><span>正文</span></label>
+<label><input type="radio" name="area" value="signature"><span>落款</span></label>
+<label><input type="radio" name="area" value="paragraph"><span>全篇段落</span></label>
+<label><input type="radio" name="area" value="page"><span>页面</span></label>
+<label><input type="radio" name="area" value="furniture"><span>页眉页脚</span></label>
+</fieldset>
+<div id="panels"></div>
+<section id="templateNaming" hidden><label for="templateName">新模板名称</label><div class="name-row"><input id="templateName" maxlength="40" placeholder="例如：法院文书、日常合同"><button id="confirmTemplate" type="button" class="primary">保存模板</button><button id="cancelTemplate" type="button">返回设置</button></div><p id="nameError" class="error" role="alert"></p></section>
+<footer><span class="footer-note">设置保存在本机 · 点击排版后生效</span><div class="actions"><button id="cancel" type="button">取消</button><button id="newTemplate" type="button">另存为模板</button><button id="save" type="submit" class="primary">保存设置</button></div></footer>
+</form><datalist id="fontOptions"></datalist><datalist id="sizeOptions"><option value="22">二号</option><option value="18">小二</option><option value="16">三号</option><option value="15">小三</option><option value="14">四号</option><option value="12">小四</option><option value="10.5">五号</option></datalist>
+</main></body></html>

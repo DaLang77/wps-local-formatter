@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1">
+ <title>排版结果</title>
+ <link rel="stylesheet" href="result.css">
+ <script src="result.js" defer></script>
+</head>
+<body>
+<main id="resultView" data-state="loading">
+ <header>
+  <h1>排版结果</h1>
+  <dl class="template"><dt>当前模板</dt><dd id="templateName">正在读取…</dd></dl>
+ </header>
+ <section class="result-card" aria-labelledby="resultStatus">
+  <h2 id="resultStatus">正在读取</h2>
+  <p id="resultMessage" class="message" role="status" aria-live="polite" tabindex="0">正在读取本次结果…</p>
+ </section>
+ <footer><button id="close" type="button">关闭</button></footer>
+</main>
+</body>
+</html>

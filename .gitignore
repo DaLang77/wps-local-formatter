@@ -1,0 +1,15 @@
+build/
+dist/
+release/
+evidence/
+assets/
+docs/plans/
+.DS_Store
+__pycache__/
+*.log
+settings.json
+*.docx
+*.pdf
+*.ttf
+*.ttc
+*.otf
