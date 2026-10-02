@@ -9,7 +9,7 @@ const modern = () => (config.modernDefaults || config.defaults)();
 async function fixture(t, extra={}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(),'wps-host-test-'));
   const {createHost} = await import('../node-host/server.mjs');
-  const host = createHost({settingsPath:path.join(directory,'settings.json'),...extra});
+  const host = createHost({settingsPath:path.join(directory,'settings.json'),registrationPath:path.join(directory,'publish.xml'),...extra});
   const {port} = await host.start();
   t.after(async () => {await host.close(); await fs.rm(directory,{recursive:true,force:true});});
   const url = `http://127.0.0.1:${port}`, token = (await (await fetch(`${url}/session`)).json()).token;
@@ -51,6 +51,74 @@ test('environment checks heading fonts and bridge mismatches; legacy count is va
   await f.pulse();assert.equal((await f.call('/request',{op:'format',docID:'42',count:100})).status,400);
   assert.equal((await f.call('/request',{op:'format',docID:'42',count:3})).status,200);
   const command=(await f.pulse()).data.command;assert.equal(command.count,3);assert.equal(command.config.signatureCount,3);assert.equal(command.config.recognition,'position');
+});
+const registeredXML=Buffer.from('<jsplugins><jspluginonline name="local-wps-formatter" url="http://127.0.0.1:38941/" enable="enable_dev"/></jsplugins>');
+test('pending registration checks return waiting, share one read and leave other endpoints usable',async t=>{
+  let reads=0,started;const reading=new Promise(resolve=>{started=resolve;}),pending=new Promise(()=>{});
+  const f=await fixture(t,{port:0,registrationTimeoutMs:20,readRegistration:()=>{reads++;started();return pending;}});
+  assert.equal((await f.call('/environment',undefined,{'X-Formatter-Client':'missing'})).status,409);assert.equal(reads,0);
+  await f.pulse({clientID:'owner'});
+  const first=f.call('/environment',undefined,{'X-Formatter-Client':'owner'});await reading;
+  const second=f.call('/environment',undefined,{'X-Formatter-Client':'owner'});
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).status,200);
+  assert.equal((await f.call('/settings')).status,200);
+  assert.equal((await f.call('/request',{op:'analyze',docID:'42',clientID:'owner'})).status,200);
+  for(const result of await Promise.all([first,second,f.call('/environment',undefined,{'X-Formatter-Client':'owner'})])){
+    assert.equal(result.status,200);assert.equal(result.data.registration.registered,null);
+    const check=result.data.checks.find(check=>check.id==='registration');assert.equal(check.state,'waiting');assert.match(check.message,/超时/);assert.doesNotMatch(check.message,/不存在|访问被拒绝/);
+    assert.equal(result.data.server.ok,true);assert.equal(result.data.wps.clientID,'owner');
+  }
+  assert.equal(reads,1);
+  assert.equal((await f.call('/environment',undefined,{'X-Formatter-Client':'owner'})).data.checks.find(check=>check.id==='registration').state,'waiting');assert.equal(reads,1);
+});
+test('late registration success and failure are caught and delivered by the next check',async t=>{
+  for(const failure of [null,Object.assign(new Error('late denied'),{code:'EACCES'}),new Error('late read failure')]){
+    let reads=0,resolveRead,rejectRead;const pending=new Promise((resolve,reject)=>{resolveRead=resolve;rejectRead=reject;});
+    const f=await fixture(t,{port:0,registrationTimeoutMs:20,readRegistration:()=>{reads++;return pending;}});
+    const timedOut=await f.call('/environment');assert.equal(timedOut.data.checks.find(check=>check.id==='registration').state,'waiting');
+    if(failure)rejectRead(failure);else resolveRead(registeredXML);
+    const late=await f.call('/environment');assert.equal(late.status,200);assert.equal(reads,1);
+    assert.equal(late.data.registration.registered,failure?null:true);assert.equal(late.data.checks.find(check=>check.id==='registration').state,failure?.code==='EACCES'?'blocked':failure?'waiting':'ready');
+    if(failure)assert.match(late.data.registration.error,failure.code==='EACCES'?/EACCES/:/读取失败.*late read failure/);
+    await f.call('/environment');assert.equal(reads,2);
+  }
+});
+test('registration missing files, access errors and XML errors remain distinct',async t=>{
+  const cases=[
+    {read:async()=>null,registered:false,message:/不存在/},
+    {read:async()=>{throw Object.assign(new Error('not found'),{code:'ENOENT'});},registered:false,message:/不存在/},
+    {read:async()=>{throw new Error('unknown read failure');},registered:null,state:'waiting',message:/读取失败.*unknown read failure/},
+    ...['EACCES','EPERM'].map(code=>({read:async()=>{throw Object.assign(new Error('denied'),{code});},registered:null,message:new RegExp('访问被拒绝.*'+code)})),
+    {read:async()=>Buffer.from('<jsplugins><invalid></jsplugins>'),registered:null,message:/解析失败.*XML 无效/},
+    {read:async()=>Buffer.from('<unknown/>'),registered:null,message:/解析失败.*结构未知/},
+    {read:async()=>Buffer.from('<!DOCTYPE jsplugins><jsplugins/>'),registered:null,message:/解析失败.*未知声明/},
+    {read:async()=>Buffer.from('<jsplugins/>'),registered:false,message:/尚未登记/}
+  ];
+  for(const item of cases){
+    const f=await fixture(t,{port:0,readRegistration:item.read});const result=await f.call('/environment');
+    assert.equal(result.status,200);assert.equal(result.data.registration.registered,item.registered);
+    const check=result.data.checks.find(check=>check.id==='registration');assert.equal(check.state,item.state||'blocked');assert.match(check.message,item.message);
+    if(item.state==='waiting')assert.doesNotMatch(check.action,/初始化/);
+  }
+});
+test('environment rereads the explicit owner heartbeat after registration waits',async t=>{
+  let now=1000,started,release;const reading=new Promise(resolve=>{started=resolve;});
+  const f=await fixture(t,{port:0,clock:()=>now,readRegistration:()=>new Promise(resolve=>{release=resolve;started();})});
+  await f.pulse({clientID:'owner',fonts:['华文中宋','仿宋_GB2312']});
+  const checking=f.call('/environment',undefined,{'X-Formatter-Client':'owner'});await reading;now+=4000;
+  await f.pulse({clientID:'other',docID:'other'});release(registeredXML);
+  const result=await checking;assert.equal(result.status,200);assert.equal(result.data.wps.clientID,'owner');assert.equal(result.data.wps.docID,'42');
+  assert.equal(result.data.wps.heartbeatFresh,false);assert.equal(result.data.wps.apiReady,false);assert.equal(result.data.wps.documentOpen,false);assert.equal(result.data.fonts.ready,false);
+});
+test('environment rereads owner document changes during registration and never falls back after retirement',async t=>{
+  let now=1000,started,release;let reading=new Promise(resolve=>{started=resolve;});
+  const f=await fixture(t,{port:0,clock:()=>now,readRegistration:()=>new Promise(resolve=>{release=resolve;started();})});
+  await f.pulse({clientID:'owner'});
+  const checking=f.call('/environment',undefined,{'X-Formatter-Client':'owner'});await reading;
+  await f.pulse({clientID:'owner',docID:'changed',readOnly:true});release(registeredXML);
+  const result=await checking;assert.equal(result.status,200);assert.equal(result.data.wps.docID,'changed');assert.equal(result.data.wps.readOnly,true);
+  reading=new Promise(resolve=>{started=resolve;});const retired=f.call('/environment',undefined,{'X-Formatter-Client':'owner'});await reading;now+=120000;
+  await f.pulse({clientID:'other',docID:'other'});release(registeredXML);assert.equal((await retired).status,409);
 });
 test('queue validates context, delivers once, rejects stale results, and preserves request fields',async t=>{
   const f=await fixture(t,{port:0});

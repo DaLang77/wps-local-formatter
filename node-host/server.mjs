@@ -33,12 +33,12 @@ async function readJSON(request) {
   return data;
 }
 
-export function createHost({ staticDir = fileURLToPath(new URL('../addin/', import.meta.url)), settingsPath, configModule, port = 38941, host = '127.0.0.1', diagnostics: diagnosticMode = false, clock = Date.now, buildID = VERSION, registrationPath = path.join(os.homedir(),'Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons/publish.xml'), store: suppliedStore } = {}) {
+export function createHost({ staticDir = fileURLToPath(new URL('../addin/', import.meta.url)), settingsPath, configModule, port = 38941, host = '127.0.0.1', diagnostics: diagnosticMode = false, clock = Date.now, buildID = VERSION, registrationPath = path.join(os.homedir(),'Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons/publish.xml'), readRegistration = readOptional, registrationTimeoutMs = 1000, store: suppliedStore } = {}) {
   if (host !== '127.0.0.1') throw new Error('服务只能绑定 127.0.0.1。');
   const store = suppliedStore || new SettingsStore({ file: settingsPath, configModule });
   const token = randomBytes(32).toString('hex'), started = clock();
   const clients = new Map(), state = { pending: null, pendingAt: null, busy: '', owner: undefined };
-  let boundPort = port, pulseOrder = 0, resultOrder = 0;
+  let boundPort = port, pulseOrder = 0, resultOrder = 0, registrationTask = null;
   function requestClient(request, data) {
     const header = request.headers['x-formatter-client'], body = data?.clientID;
     const fromHeader = header === undefined ? undefined : string(header, '插件实例', 100);
@@ -94,27 +94,48 @@ export function createHost({ staticDir = fileURLToPath(new URL('../addin/', impo
     if (docID !== String(s.docID)) throw new FormatterError('当前文档已经切换，未开始操作。', 409);
     return s;
   }
+  async function readRegistrationState() {
+    let parsing = false;
+    try {
+      const bytes = await readRegistration(registrationPath);
+      if (bytes === null) return { registered: false, error: '插件注册文件不存在，请退出 WPS 后初始化。', state: 'blocked', action: '退出 WPS 后初始化' };
+      parsing = true;
+      const text = bytes.toString('utf8');
+      if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('注册文件包含未知声明。');
+      const document = new DOMParser({onError(){throw new Error('注册 XML 无效。');}}).parseFromString(text,'application/xml');
+      if (document.documentElement?.nodeName !== 'jsplugins') throw new Error('注册文件结构未知。');
+      const registered = [...document.documentElement.childNodes].some(entry => entry.nodeType === 1 && entry.nodeName === 'jspluginonline' && entry.getAttribute('name') === 'local-wps-formatter' && entry.getAttribute('url') === 'http://127.0.0.1:38941/' && entry.getAttribute('enable') === 'enable_dev');
+      return { registered, error: null, state: registered ? 'ready' : 'blocked', action: registered ? '' : '退出 WPS 后初始化' };
+    } catch (error) {
+      const code = error?.code;
+      if (code === 'ENOENT') return { registered: false, error: '插件注册文件不存在，请退出 WPS 后初始化。', state: 'blocked', action: '退出 WPS 后初始化' };
+      if (code === 'EACCES' || code === 'EPERM') return { registered: null, error: `插件注册文件访问被拒绝（${code}），请检查文件权限及系统授权。`, state: 'blocked', action: '检查文件权限及系统授权后重试' };
+      return { registered: null, error: `${parsing ? '插件注册文件解析失败' : '插件注册文件读取失败'}：${error?.message || String(error)}`, state: parsing ? 'blocked' : 'waiting', action: parsing ? '退出 WPS 后初始化' : '检查注册文件后重试' };
+    }
+  }
+  async function checkRegistration() {
+    // Keep a timed-out read in flight, including its late result, until consumed.
+    // Repeated checks must not start more filesystem operations while it hangs.
+    if (registrationTask === null) registrationTask = readRegistrationState();
+    const task = registrationTask, waiting = { registered: null, error: '插件注册检查超时，尚未确定注册状态。请稍后重试。', state: 'waiting', action: '稍后重试环境检查；持续超时请运行 ZIP 内的检查入口' };
+    let timer;
+    try {
+      const result = await Promise.race([task, new Promise(resolve => { timer = setTimeout(() => resolve(waiting), registrationTimeoutMs); })]);
+      if (result !== waiting && registrationTask === task) registrationTask = null;
+      return result;
+    } finally { clearTimeout(timer); }
+  }
   async function environment(id) {
-    const s = status(id), settings = await store.load();
-    const requested = new Set();
+    status(id);
+    const settings = await store.load(), registration = await checkRegistration();
+    const s = status(id), requested = new Set();
     function collect(value) { if (Array.isArray(value)) { value.forEach(collect); return; } if (!object(value) || value.enabled === false) return; for (const [key, child] of Object.entries(value)) { if (key === 'font' && typeof child === 'string') requested.add(child); else collect(child); } }
     collect(settings.current);
     const values = s.fonts, missing = values === null ? null : [...requested].filter(font => !values.includes(font));
-    const versionMatches = s.bridgeVersion === VERSION;
-    let registered = false, registrationError = null;
-    try {
-      const bytes = await readOptional(registrationPath);
-      if (bytes !== null) {
-        const text = bytes.toString('utf8');
-        if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('注册文件包含未知声明。');
-        const document = new DOMParser({onError(){throw new Error('注册 XML 无效。');}}).parseFromString(text,'application/xml');
-        if (document.documentElement?.nodeName !== 'jsplugins') throw new Error('注册文件结构未知。');
-        registered = [...document.documentElement.childNodes].some(entry => entry.nodeType === 1 && entry.nodeName === 'jspluginonline' && entry.getAttribute('name') === 'local-wps-formatter' && entry.getAttribute('url') === 'http://127.0.0.1:38941/' && entry.getAttribute('enable') === 'enable_dev');
-      }
-    } catch (error) { registered = null; registrationError = error.message; }
+    const versionMatches = s.bridgeVersion === VERSION, registered = registration.registered, registrationError = registration.error;
     const checks = [
       { id: 'server', label: '本地服务', ok: true, state: 'ready', message: `版本 ${VERSION}`, action: '' },
-      { id: 'registration', label: '插件注册', ok: registered === true, state: registered === true ? 'ready' : 'blocked', message: registered === true ? '已登记本地插件。' : registrationError || '尚未登记本地插件，请退出 WPS 后初始化。', action: '退出 WPS 后初始化' },
+      { id: 'registration', label: '插件注册', ok: registered === true, state: registration.state, message: registered === true ? '已登记本地插件。' : registrationError || '尚未登记本地插件，请退出 WPS 后初始化。', action: registration.action },
       { id: 'heartbeat', label: 'WPS 连接', ok: s.heartbeatFresh, state: s.heartbeatFresh ? 'ready' : 'waiting', message: s.heartbeatFresh ? '已收到 WPS 心跳。' : '请重新打开 WPS，并打开文档。', action: '重新打开 WPS' },
       { id: 'api', label: '文档接口', ok: s.apiReady, state: s.apiReady ? 'ready' : 'waiting', message: s.apiReady ? 'WPS 文档接口已就绪。' : '等待 WPS 加载插件。', action: '重新打开 WPS' },
       { id: 'bridge-version', label: '插件版本', ok: s.heartbeatFresh && versionMatches, state: s.heartbeatFresh ? (versionMatches ? 'ready' : 'blocked') : 'waiting', message: s.heartbeatFresh ? (versionMatches ? `插件版本 ${VERSION}` : `插件版本不一致（${s.bridgeVersion || '未知'}），请退出并重新打开 WPS。`) : '等待插件报告版本。', action: '退出并重新打开 WPS' },
