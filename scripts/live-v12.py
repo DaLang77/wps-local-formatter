@@ -41,10 +41,14 @@ def main():
     if not isinstance(payload, dict):
         raise SystemExit('操作参数必须为 JSON 对象，未发起操作。')
     token = json.load(urlopen(args.base + '/session', timeout=3))['token']
+    owner = None
 
     def call(route, data=None):
+        headers = {'X-Formatter-Token': token, 'Content-Type': 'application/json'}
+        if owner is not None:
+            headers['X-Formatter-Client'] = owner
         request = Request(args.base + route, data=None if data is None else json.dumps(data).encode(),
-                          headers={'X-Formatter-Token': token, 'Content-Type': 'application/json'})
+                          headers=headers)
         return json.load(urlopen(request, timeout=5))
 
     environment = call('/environment')
@@ -52,6 +56,11 @@ def main():
     if server.get('version') != version or server.get('buildID') != expected_build:
         raise SystemExit('本地服务不是当前候选构建，未发起操作。')
     status = call('/state').get('status', {})
+    owner = status.get('clientID')
+    if owner is not None:
+        if not isinstance(owner, str) or not owner:
+            raise SystemExit('WPS 窗口标识无效，未发起操作。')
+        status = call('/state').get('status', {})
     if not (status.get('heartbeatFresh') is True and status.get('apiReady') is True
             and status.get('documentOpen') is True and status.get('bridgeVersion') == version):
         raise SystemExit('当前候选插件、接口或文档尚未就绪，未发起操作。')
@@ -60,6 +69,8 @@ def main():
     if args.operation in ('inspect', 'probe', 'undo'):
         payload['diagnostic'] = True
     payload.update(op=args.operation, docID=status['docID'])
+    if owner is not None:
+        payload['clientID'] = owner
     queued = call('/request', payload)
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:

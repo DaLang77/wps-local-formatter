@@ -85,6 +85,119 @@ test('document or bridge switching before poll cancels the unclaimed operation',
   await f.pulse();const switched=(await f.call('/request',{op:'format',docID:'42'})).data;assert.deepEqual((await f.pulse({bridgeVersion:'old'})).data,{});state=(await f.call('/state')).data;assert.equal(state.busy,'');assert.equal(state.result.ok,false);
   assert.equal((await f.call('/result',{id:switched.id,ok:true})).status,409);
 });
+test('document client stays selected despite later homepage polls, explicit reads keep their owner',async t=>{
+  let now=1000;const f=await fixture(t,{port:0,clock:()=>now});
+  await f.pulse({clientID:'document',version:'document-version',fonts:['华文中宋','仿宋_GB2312']});now++;
+  await f.pulse({clientID:'homepage',apiReady:false,documentOpen:false,docID:undefined,title:undefined,version:'home-version',fonts:['主页字体']});
+  const state=(await f.call('/state')).data;assert.equal(state.status.clientID,'document');assert.equal(state.status.docID,'42');
+  const environment=(await f.call('/environment')).data;assert.equal(environment.wps.clientID,'document');assert.equal(environment.wps.version,'document-version');
+  const home=(await f.call('/state',undefined,{'X-Formatter-Client':'homepage'})).data;assert.equal(home.status.clientID,'homepage');assert.equal(home.status.apiReady,false);
+  const targeted=(await f.call('/environment',undefined,{'X-Formatter-Client':'homepage'})).data;assert.equal(targeted.wps.version,'home-version');
+  assert.deepEqual((await f.call('/fonts',undefined,{'X-Formatter-Client':'document'})).data.fonts,['华文中宋','仿宋_GB2312']);
+  assert.deepEqual((await f.call('/fonts',undefined,{'X-Formatter-Client':'homepage'})).data.fonts,['主页字体']);
+});
+test('same name and DocID in another client cannot claim, cancel or finish the owner command',async t=>{
+  const f=await fixture(t,{port:0});await f.pulse({clientID:'owner'});
+  const request=(await f.call('/request',{op:'analyze',docID:'42',clientID:'owner'})).data;
+  for(const extra of [{clientID:'copy',readOnly:true},{clientID:'homepage',apiReady:false,documentOpen:false},{}])assert.deepEqual((await f.pulse(extra)).data,{});
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data.busy,request.id);
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'copy'})).data.busy,'');
+  const command=(await f.pulse({clientID:'owner'})).data.command;assert.equal(command.id,request.id);assert.equal(command.clientID,'owner');
+  assert.deepEqual((await f.pulse({clientID:'owner'})).data,{});
+  assert.equal((await f.call('/result',{id:request.id,clientID:'copy',ok:true})).status,409);
+  assert.equal((await f.call('/result',{id:request.id,ok:true})).status,409);
+  assert.equal((await f.call('/result',{id:request.id,clientID:'owner',ok:true})).status,200);
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data.result.clientID,'owner');
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'copy'})).data.resultID,'');
+});
+test('only owner document/API/bridge loss cancels pending; UI messages never replace its command result',async t=>{
+  const f=await fixture(t,{port:0});await f.pulse({clientID:'owner'});await f.pulse({clientID:'other'});
+  const a=(await f.call('/request',{op:'analyze',docID:'42',clientID:'owner'})).data;
+  await f.call('/ui-result',{clientID:'owner',message:'界面消息'});
+  await f.pulse({clientID:'other',docID:'changed',apiReady:false,documentOpen:false});
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data.busy,a.id);
+  await f.pulse({clientID:'owner',docID:'changed'});
+  let state=(await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data;assert.equal(state.result.id,a.id);assert.equal(state.result.ok,false);assert.equal(state.uiResult.message,'界面消息');
+  await f.call('/ui-result',{clientID:'owner',message:'后来界面消息'});
+  state=(await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data;assert.equal(state.result.id,a.id);
+  await f.pulse({clientID:'owner'});const b=(await f.call('/request',{op:'analyze',docID:'42',clientID:'owner'})).data;
+  await f.pulse({clientID:'owner',bridgeVersion:'old'});
+  state=(await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data;assert.equal(state.result.id,b.id);assert.equal(state.result.ok,false);
+});
+test('legacy state.result shows the latest UI message after a completed queue and later queue results still replace it',async t=>{
+  const f=await fixture(t,{port:0});await f.pulse();
+  const first=(await f.call('/request',{op:'analyze',docID:'42'})).data;await f.pulse();
+  await f.call('/result',{id:first.id,ok:true,message:'旧队列完成'});
+  assert.equal((await f.call('/state')).data.result.message,'旧队列完成');
+  await f.call('/ui-result',{ok:true,kind:'success',message:'旧客户端最新界面消息'});
+  let state=(await f.call('/state')).data;assert.equal(state.result.message,'旧客户端最新界面消息');assert.equal(state.resultID,'');assert.equal(state.status.clientID,undefined);
+  const second=(await f.call('/request',{op:'preview',docID:'42'})).data;await f.pulse();
+  await f.call('/result',{id:second.id,ok:true,message:'后来队列完成'});
+  state=(await f.call('/state')).data;assert.equal(state.result.id,second.id);assert.equal(state.result.message,'后来队列完成');
+});
+test('explicit stale owner returns its waiting state, requests refuse it and missing owners never fall back',async t=>{
+  let now=1000;const f=await fixture(t,{port:0,clock:()=>now});await f.pulse({clientID:'old'});now+=4000;await f.pulse({clientID:'new',docID:'other'});
+  assert.equal((await f.call('/state')).data.status.clientID,'new');
+  const old=(await f.call('/state',undefined,{'X-Formatter-Client':'old'})).data;assert.equal(old.status.clientID,'old');assert.equal(old.status.heartbeatFresh,false);assert.equal(old.status.docID,'42');
+  assert.equal((await f.call('/environment',undefined,{'X-Formatter-Client':'old'})).data.wps.apiReady,false);
+  assert.equal((await f.call('/request',{op:'analyze',clientID:'old',docID:'42'})).status,409);
+  for(const route of ['/state','/environment'])assert.equal((await f.call(route,undefined,{'X-Formatter-Client':'missing'})).status,409);
+  assert.equal((await f.call('/request',{op:'analyze',clientID:'missing',docID:'other'})).status,409);
+  now+=120000;assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'old'})).status,409);
+});
+test('claimed busy owner survives stale heartbeat and TTL; its result stays available for the page',async t=>{
+  let now=1000;const f=await fixture(t,{port:0,clock:()=>now});await f.pulse({clientID:'owner'});
+  const request=(await f.call('/request',{op:'format',docID:'42',clientID:'owner'})).data;await f.pulse({clientID:'owner'});now+=120000;
+  await f.pulse({clientID:'other',docID:'other'});
+  let state=(await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data;assert.equal(state.busy,request.id);assert.equal(state.status.heartbeatFresh,false);
+  assert.equal((await f.call('/result',{id:request.id,clientID:'owner',ok:true})).status,200);
+  state=(await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data;assert.equal(state.result.id,request.id);assert.equal(state.busy,'');
+});
+test('unbound operations only use the legacy slot, modern ownership requires its ID and validates consistently',async t=>{
+  const f=await fixture(t,{port:0});await f.pulse({clientID:'modern'});
+  assert.equal((await f.call('/request',{op:'analyze',docID:'42'})).status,409);
+  assert.equal((await f.call('/ui-result',{message:'没有归属'})).status,409);
+  await f.pulse({apiReady:false,documentOpen:false});assert.equal((await f.call('/request',{op:'analyze',docID:'42'})).status,409);
+  await f.pulse();const legacy=(await f.call('/request',{op:'analyze',docID:'42'})).data;assert.equal(legacy.clientID,undefined);
+  assert.deepEqual((await f.pulse({clientID:'modern'})).data,{});assert.equal((await f.pulse()).data.command.clientID,undefined);
+  assert.equal((await f.call('/result',{id:legacy.id,clientID:'modern',ok:true})).status,409);
+  assert.equal((await f.call('/result',{id:legacy.id,ok:true})).status,200);
+  const request=(await f.call('/request',{op:'analyze',docID:'42'},{'X-Formatter-Client':'modern'})).data;assert.equal(request.clientID,'modern');
+  assert.deepEqual((await f.pulse()).data,{});assert.equal((await f.pulse({clientID:'modern'})).data.command.clientID,'modern');
+  assert.equal((await f.call('/result',{id:request.id,ok:true})).status,409);
+  assert.equal((await f.call('/result',{id:request.id,ok:true},{'X-Formatter-Client':'modern'})).status,200);
+  assert.equal((await f.call('/poll',{clientID:''})).status,400);
+  assert.equal((await f.call('/poll',{clientID:'a'},{'X-Formatter-Client':'b'})).status,400);
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':''})).status,400);
+  assert.equal((await f.call('/poll',{clientID:'x'.repeat(101)})).status,400);
+});
+test('client count is bounded, stale unused clients can retire and busy owner cannot be evicted',async t=>{
+  let now=1000;const f=await fixture(t,{port:0,clock:()=>now});
+  for(let i=0;i<64;i++)assert.equal((await f.pulse({clientID:'client-'+i})).status,200);
+  assert.equal((await f.pulse({clientID:'overflow'})).status,409);
+  const request=(await f.call('/request',{op:'analyze',docID:'42',clientID:'client-0'})).data;now+=4000;
+  assert.equal((await f.pulse({clientID:'replacement'})).status,200);
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'client-1'})).status,409);
+  assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'client-0'})).data.busy,request.id);
+  assert.equal((await f.pulse({clientID:'client-0'})).data.command.id,request.id);
+});
+test('enqueue rechecks global busy after settings load so concurrent requests cannot overwrite a command',async t=>{
+  let loaded;const loading=new Promise(resolve=>{loaded=resolve;}),releases=[];
+  const store={normalize:config.normalize,load:()=>new Promise(resolve=>{releases.push(resolve);if(releases.length===2)loaded();})};
+  const f=await fixture(t,{port:0,store});await f.pulse({clientID:'owner'});
+  const a=f.call('/request',{op:'analyze',clientID:'owner',docID:'42'}),b=f.call('/request',{op:'preview',clientID:'owner',docID:'42'});await loading;
+  releases.forEach(resolve=>resolve({current:modern()}));const results=await Promise.all([a,b]);
+  assert.deepEqual(results.map(result=>result.status).sort(),[200,409]);
+  const accepted=results.find(result=>result.status===200).data.id;assert.equal((await f.pulse({clientID:'owner'})).data.command.id,accepted);
+});
+test('enqueue rechecks owner context after settings load before publishing pending',async t=>{
+  for(const changed of [{docID:'other'},{apiReady:false},{bridgeVersion:'old'},{readOnly:true}]){
+    let loaded,release;const loading=new Promise(resolve=>{loaded=resolve;}),store={normalize:config.normalize,load:()=>new Promise(resolve=>{release=resolve;loaded();})};
+    const f=await fixture(t,{port:0,store});await f.pulse({clientID:'owner'});
+    const queued=f.call('/request',{op:'format',clientID:'owner',docID:'42'});await loading;await f.pulse({clientID:'owner',...changed});release({current:modern()});
+    assert.equal((await queued).status,409);assert.equal((await f.call('/state',undefined,{'X-Formatter-Client':'owner'})).data.busy,'');
+  }
+});
 test('diagnostics require opt-in and synthetic documents, read-only mutations are rejected',async t=>{
   const normal=await fixture(t,{port:0});await normal.pulse({title:'WPS排版测试.docx'});
   assert.equal((await normal.call('/request',{op:'probe',docID:'42'})).status,400);

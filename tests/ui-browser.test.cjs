@@ -8,14 +8,15 @@ function fixture(current){current=current||Config.modernDefaults();return {revis
 async function browserFixture(t,options={}){
  const launch=process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE?{executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE}:fs.existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')?{channel:'chrome'}:{};
  const browser=await chromium.launch({...launch,headless:true});t.after(()=>browser.close());const page=await browser.newPage({viewport:{width:940,height:1000}}),calls=[],errors=[];page.on('pageerror',e=>errors.push(e.message));t.after(()=>assert.deepEqual(errors,[]));
- let settings=options.settings||fixture(),result={},requestID=0,environment=options.environment||{server:{ok:true,version:'1.2.0-beta.1'},wps:{heartbeatFresh:true,apiReady:true,documentOpen:true,bridgeVersion:'1.2.0-beta.1',version:'12.1.28496',docID:'12',scope:'document'},fonts:{ready:true,values:['华文中宋','仿宋_GB2312'],missing:[]}};
+ const ownerResults=new Map();let settings=options.settings||fixture(),result={},requestID=0,environment=options.environment||{server:{ok:true,version:'1.2.0-beta.1'},wps:{heartbeatFresh:true,apiReady:true,documentOpen:true,bridgeVersion:'1.2.0-beta.1',version:'12.1.28496',docID:'12',scope:'document'},fonts:{ready:true,values:['华文中宋','仿宋_GB2312'],missing:[]}};
  const analysis=options.analysis||{docID:'12',fingerprint:'fingerprint',scope:'document',paragraphs:[{index:1,summary:'通知标题',role:'title',reason:'首个非空段落',eligible:true},{index:2,summary:'收件人：',role:'body',reason:'正文规则',eligible:true},{index:3,summary:'表格内容',role:'preserve',reason:'表格不处理',eligible:false,assignable:false},{index:4,summary:'',role:'blank',reason:'空段：分页按规则',eligible:false,assignable:true}],sessionInvalidated:false};
  await page.route('http://127.0.0.1:18999/**',async route=>{
-  const req=route.request(),url=new URL(req.url()),pathname=url.pathname,body=req.method()==='POST'?req.postDataJSON():undefined;calls.push({pathname,body});let output,status=200;
+  const req=route.request(),url=new URL(req.url()),pathname=url.pathname,body=req.method()==='POST'?req.postDataJSON():undefined,headers=req.headers(),clientID=headers['x-formatter-client']||'',ownerEnvironment=options.owners&&options.owners[clientID]||environment;calls.push({pathname,body,headers});let output,status=200;
+  if(Object.prototype.hasOwnProperty.call(headers,'x-formatter-client')&&!headers['x-formatter-client']){await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'插件实例标识为空，请从目标文档重新打开此窗口。'})});return;}
   if(pathname==='/session')output={token:'ui-synthetic-only'};
   else if(pathname==='/settings')output=settings;
-  else if(pathname==='/fonts')output={fonts:environment.fonts.values||[]};
-  else if(pathname==='/environment')output=environment;
+  else if(pathname==='/fonts')output={fonts:ownerEnvironment.fonts.values||[]};
+  else if(pathname==='/environment')output=ownerEnvironment;
   else if(pathname==='/settings/save'){settings.current=copy(body.config);settings.revision++;output=settings;}
   else if(pathname==='/templates'){settings.current=copy(body.config);settings.activeTemplateID='new';settings.templates.push({id:'new',name:body.name,config:copy(body.config)});settings.revision++;output=settings;}
   else if(pathname==='/templates/export'){const config=copy(settings.templates.find(v=>v.id===body.id).config);if(!body.includeFurniture){['header','footer'].forEach(k=>{config.furniture[k].text='';config.furniture[k].enabled=false;});}output={format:'wps-local-formatter-template',fileVersion:1,name:'默认文书',config};}
@@ -24,11 +25,11 @@ async function browserFixture(t,options={}){
    const id=++requestID;result={id,ok:true};
    if(body.op==='analyze')result.analysis=copy(analysis);
    else if(body.op==='set-role'){const row=analysis.paragraphs.find(p=>p.index===body.index);row.role=body.role==='auto'?'blank':body.role;result.analysis=copy(analysis);}
-   else if(body.op==='scope'){analysis.scope=body.scope;environment.wps.scope=body.scope;result.analysis=copy(analysis);}
+   else if(body.op==='scope'){analysis.scope=body.scope;ownerEnvironment.wps.scope=body.scope;result.analysis=copy(analysis);}
    else if(body.op==='extract')result.extracted={format:{font:null,size:12,alignment:0,indent:null,line:{mode:null,value:null},before:0,after:null},warnings:['混合字体保持原样']};
    else if(body.op==='preview')result.preview={scope:analysis.scope,targetCount:3,counts:{change:2,skip:1,unchanged:1},warnings:[],rows:[{index:1,summary:'通知标题',eligible:true,selected:true,change:true,reason:'标题格式'},{index:2,summary:'收件人：',eligible:true,selected:true,change:false,reason:'当前格式相同'},{index:3,summary:'表格内容',eligible:false,selected:true,skip:true,reason:'表格不处理'},{index:4,summary:'',role:'blank',eligible:false,selected:true,skip:false,change:true,reason:'空段：仅链接分页'}]};
-   output={id};
-  }else if(pathname==='/state')output={result};
+   ownerResults.set(body.clientID||'',result);output={id};
+  }else if(pathname==='/state')output={result:clientID?options.queueResults&&options.queueResults[clientID]||ownerResults.get(clientID)||{}:options.foreignResult?{id:requestID,ok:false,message:'其他窗口没有打开文档'}:result,uiResult:options.uiResults&&options.uiResults[clientID]};
   else if(/^\/[a-z-]+\.(html|js|css)$/.test(pathname)){
    const file=path.join(__dirname,'..','addin',pathname.slice(1));if(fs.existsSync(file)){await route.fulfill({status:200,contentType:pathname.endsWith('.html')?'text/html':pathname.endsWith('.css')?'text/css':'text/javascript',body:fs.readFileSync(file)});return;}status=404;output={error:'missing resource'};
   }else {status=404;output={error:'unknown synthetic endpoint'};}
@@ -60,4 +61,26 @@ uiTest('字体未知时等待，确认缺少后由用户选择并显式保存',a
 });
 uiTest('设置、结构和环境页在窄窗口仍能显示主要操作，无正文横向溢出',async t=>{
  const f=await browserFixture(t);for(const file of ['settings','structure','environment']){await f.page.setViewportSize({width:420,height:900});await f.page.goto('http://127.0.0.1:18999/'+file+'.html');await f.page.waitForTimeout(100);assert.equal(await f.page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,file+' page overflows');assert.equal(await f.page.locator('h1').isVisible(),true);}
+});
+uiTest('带实例 hash 的页面只读取对应窗口，跨页导航保留实例与文档',async t=>{
+ const owner={server:{ok:true,version:'1.2.0-beta.1'},wps:{heartbeatFresh:true,apiReady:true,documentOpen:true,docID:'12',bridgeVersion:'1.2.0-beta.1',scope:'document'},fonts:{ready:true,values:['华文中宋','仿宋_GB2312'],missing:[]}};
+ const foreign={server:{ok:true,version:'1.2.0-beta.1'},wps:{heartbeatFresh:true,apiReady:true,documentOpen:false,docID:'99',readOnly:true},fonts:{ready:false,values:[],missing:[]}},hash='#clientID=client-A&docID=12';
+ const f=await browserFixture(t,{owners:{'client-A':owner},environment:foreign,foreignResult:true});
+ await f.page.goto('http://127.0.0.1:18999/settings.html'+hash);await f.page.waitForFunction(()=>!document.getElementById('save').disabled);await f.page.locator('[data-capture=title]').click();await f.page.locator('#feedback').filter({hasText:'格式已填入草稿'}).waitFor();assert.deepEqual(f.calls.find(c=>c.pathname==='/request').body,{op:'extract',role:'title',docID:'12',clientID:'client-A'});
+ await f.page.getByRole('link',{name:'文档结构',exact:true}).click();await f.page.locator('#paragraphRows select').first().waitFor();assert.equal(new URL(f.page.url()).hash,hash);assert.equal(f.calls.filter(c=>c.pathname==='/request').at(-1).body.docID,'12');assert.equal(f.calls.filter(c=>c.pathname==='/request').at(-1).body.clientID,'client-A');
+ await f.page.getByRole('link',{name:'环境检查',exact:true}).click();await f.page.locator('#feedback').filter({hasText:'环境状态已更新'}).waitFor();assert.equal(new URL(f.page.url()).hash,hash);assert.match(await f.page.locator('#fontStatus').textContent(),/已取得 2 种字体/);assert.match(await f.page.locator('#checks').textContent(),/会话 12/);assert.ok(!/会话 99/.test(await f.page.locator('#checks').textContent()));
+ for(const call of f.calls.filter(c=>['/environment','/state','/request'].includes(c.pathname)))assert.equal(call.headers['x-formatter-client'],'client-A');
+});
+uiTest('固定文档关闭或切换后拒绝操作，不改为同实例的新文档',async t=>{
+ const owner={server:{ok:true,version:'1.2.0-beta.1'},wps:{heartbeatFresh:true,apiReady:true,documentOpen:true,docID:'12',bridgeVersion:'1.2.0-beta.1',scope:'document'},fonts:{ready:true,values:['华文中宋','仿宋_GB2312'],missing:[]}},hash='#clientID=client-A&docID=12';
+ const f=await browserFixture(t,{owners:{'client-A':owner}});await f.page.goto('http://127.0.0.1:18999/settings.html'+hash);await f.page.waitForFunction(()=>!document.getElementById('save').disabled);owner.wps.docID='99';await f.page.locator('[data-capture=title]').click();await f.page.locator('#feedback').filter({hasText:'关闭后重新打开此窗口'}).waitFor();assert.equal(f.calls.filter(c=>c.pathname==='/request').length,0);
+ owner.wps.docID='12';await f.page.goto('http://127.0.0.1:18999/structure.html'+hash);await f.page.locator('#paragraphRows select').first().waitFor();const before=f.calls.filter(c=>c.pathname==='/request').length;owner.wps.documentOpen=false;await f.page.locator('#preview').click();await f.page.locator('#feedback').filter({hasText:'关闭后重新打开此窗口'}).waitFor();assert.equal(f.calls.filter(c=>c.pathname==='/request').length,before);assert.ok(!f.calls.some(c=>c.pathname==='/request'&&c.body.docID==='99'));
+});
+uiTest('显式空实例标识保留并拒绝，不静默转发给其他窗口',async t=>{
+ const f=await browserFixture(t);for(const file of ['settings','structure','environment']){const before=f.calls.length;await f.page.goto('http://127.0.0.1:18999/'+file+'.html#clientID=&docID=12');await f.page.locator('#feedback').filter({hasText:'插件实例标识为空'}).waitFor();const apiCalls=f.calls.slice(before).filter(c=>['/settings','/environment','/state','/request'].includes(c.pathname));assert.ok(apiCalls.length>0);for(const call of apiCalls){assert.ok(Object.prototype.hasOwnProperty.call(call.headers,'x-formatter-client'));assert.equal(call.headers['x-formatter-client'],'');}assert.ok(!apiCalls.some(c=>c.pathname==='/request'));}
+});
+uiTest('结果页绑定窗口并优先展示该窗口 UI 结果，空 owner 不回退',async t=>{
+ const uiResult={id:'ui-42',kind:'success',ok:true,changed:3,template:'当前模板：文档42模板',message:'当前文档42排版完成'},queueResult={id:'queued-other',ok:false,message:'另一个排队请求未完成'};
+ const f=await browserFixture(t,{uiResults:{a:uiResult},queueResults:{a:queueResult}});await f.page.goto('http://127.0.0.1:18999/result.html#clientID=a&docID=42');await f.page.locator('#resultStatus').filter({hasText:'排版完成'}).waitFor();assert.equal(await f.page.locator('#resultMessage').textContent(),uiResult.message);assert.equal(await f.page.locator('#templateName').textContent(),'文档42模板');assert.equal(f.calls.find(c=>c.pathname==='/state').headers['x-formatter-client'],'a');assert.ok(!/另一个排队请求/.test(await f.page.locator('#resultMessage').textContent()));
+ const before=f.calls.length;await f.page.goto('http://127.0.0.1:18999/result.html#clientID=&docID=42');await f.page.reload();await f.page.locator('#resultMessage').filter({hasText:'插件实例标识为空'}).waitFor();assert.equal(await f.page.locator('#resultStatus').textContent(),'无法读取结果');for(const call of f.calls.slice(before).filter(c=>c.pathname==='/session'||c.pathname==='/state')){assert.ok(Object.prototype.hasOwnProperty.call(call.headers,'x-formatter-client'));assert.equal(call.headers['x-formatter-client'],'');}
 });

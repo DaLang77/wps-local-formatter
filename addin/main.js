@@ -1,5 +1,6 @@
 /* Local-only WPS bridge. Document text never enters the heartbeat. */
-var bridgeToken='', bridgeBusy=false, bridgeTimer=null;
+var bridgeToken='', bridgeBusy=false, bridgeTimer=null,bridgePollPending=false;
+var bridgeClientID='wps-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)+'-'+Math.random().toString(36).slice(2);
 var BRIDGE_VERSION='1.2.0-beta.1';
 var documentSession={docID:'',scope:'document',fingerprint:null,overrides:{},needsReview:false};
 var contentDirty=false,eventsRegistered=false,activationEventsRegistered=false,lastStructureCheck=0;
@@ -48,8 +49,10 @@ function application() {
 function request(path, data, callback) {
   var xhr=new XMLHttpRequest(); xhr.open(data===null?'GET':'POST',path,true);
   xhr.timeout=5000;
+  xhr.setRequestHeader('X-Formatter-Client',bridgeClientID);
   if(bridgeToken) xhr.setRequestHeader('X-Formatter-Token',bridgeToken);
   if(data!==null) xhr.setRequestHeader('Content-Type','application/json');
+  if(data!==null&&['/poll','/result','/request','/ui-result'].indexOf(path)>=0)data=Object.assign({},data,{clientID:bridgeClientID});
   xhr.onload=function(){try{callback(null,JSON.parse(xhr.responseText||'{}'),xhr.status);}catch(e){callback(e);}};
   xhr.onerror=xhr.ontimeout=function(){callback(new Error('本地排版工具未连接'));};
   xhr.send(data===null?null:JSON.stringify(data));
@@ -120,8 +123,9 @@ function analyzeDocument(config){
 }
 function execute(command) {
   bridgeBusy=true;
-  var result={id:command.id};
+  var result={id:command.id,clientID:bridgeClientID};
   try {
+    if(command.clientID!==undefined&&command.clientID!==bridgeClientID)throw new Error('操作来自其他 WPS 窗口，未开始操作。');
     var app=application(),d=app.ActiveDocument;
     if(!d || String(d.DocID)!==String(command.docID)) throw new Error('当前文档已经切换，未开始操作。');
     syncDocument(d);
@@ -163,11 +167,13 @@ function execute(command) {
   request('/result',result,function(){bridgeBusy=false;});
 }
 function tick() {
-  if(bridgeBusy) return;
+  if(bridgeBusy||bridgePollPending) return;
+  bridgePollPending=true;
   if(!bridgeToken) {
-    request('/session',null,function(error,data){if(!error && data.token){bridgeToken=data.token;tick();}}); return;
+    request('/session',null,function(error,data){bridgePollPending=false;if(!error && data.token){bridgeToken=data.token;tick();}}); return;
   }
   request('/poll',status(),function(error,data,http){
+    bridgePollPending=false;
     if(http===403){bridgeToken='';return;}
     if(!error && data.command && !bridgeBusy) execute(data.command);
   });
@@ -187,7 +193,7 @@ function OnStatus(){
     if(error){notify(error.message,'error');return;}
     try{
       var host=(typeof wps!=='undefined'&&typeof wps.ShowDialog==='function')?wps:application();
-      host.ShowDialog('http://127.0.0.1:38941/result.html','排版结果',640,420,false);
+      host.ShowDialog(panelURL('result.html'),'排版结果',640,420,false);
     }catch(e){notify('结果窗口无法打开：'+String(e.message||e),'error');}
   });return true;
 }
@@ -253,15 +259,14 @@ function OnFormat(){
     finally{bridgeBusy=false;}
   });return true;
 }
-function OnSettings(){
-  try{
-    var host=(typeof wps!=='undefined'&&typeof wps.ShowDialog==='function')?wps:application();
-    host.ShowDialog('http://127.0.0.1:38941/settings.html','排版设置',880,740,false);
-  }catch(e){notify('设置窗口无法打开：'+String(e.message||e),'error');}
-  return true;
+function panelURL(file){
+  var suffix='#clientID='+encodeURIComponent(bridgeClientID);
+  try{var doc=application().ActiveDocument;if(doc)suffix+='&docID='+encodeURIComponent(String(doc.DocID));}catch(ignore){}
+  return 'http://127.0.0.1:38941/'+file+suffix;
 }
+function OnSettings(){return openPanel('settings.html','排版设置',880,740);}
 function openPanel(file,title,width,height){
-  try{var host=(typeof wps!=='undefined'&&typeof wps.ShowDialog==='function')?wps:application();host.ShowDialog('http://127.0.0.1:38941/'+file,title,width,height,false);}catch(e){notify(title+'无法打开：'+String(e.message||e),'error');}return true;
+  try{var host=(typeof wps!=='undefined'&&typeof wps.ShowDialog==='function')?wps:application();host.ShowDialog(panelURL(file),title,width,height,false);}catch(e){notify(title+'无法打开：'+String(e.message||e),'error');}return true;
 }
 function OnStructure(){return openPanel('structure.html','文档结构与排版范围',960,760);}
 function OnEnvironment(){return openPanel('environment.html','环境检查',820,720);}

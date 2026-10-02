@@ -91,6 +91,22 @@ test('API 抛异常时不能报告 WPS API 可用或取得字体',()=>{
   const f=fixture();f.c.wps.WpsApplication=()=>{throw Error('API denied');};const s=f.c.status();
   assert.equal(s.apiReady,false);assert.equal(s.documentOpen,false);assert.equal(s.fonts,null);
 });
+test('不同 WPS 实例不能执行其他实例的命令，面板 URL 绑定实例和文档',()=>{
+  const a=fixture(),b=fixture();assert.notEqual(a.c.bridgeClientID,b.c.bridgeClientID);
+  const url=new URL(a.c.panelURL('structure.html')),params=new URLSearchParams(url.hash.slice(1));
+  assert.equal(url.search,'');assert.equal(params.get('clientID'),a.c.bridgeClientID);assert.equal(params.get('docID'),'7');
+  let result;a.c.request=(path,data,cb)=>{if(path==='/result')result=data;cb(null,{},200);};
+  a.c.execute({id:'foreign',clientID:b.c.bridgeClientID,docID:'7',op:'format'});
+  assert.equal(result.ok,false);assert.match(result.message,/其他 WPS 窗口/);assert.equal(a.calls.filter(Array.isArray).length,0);
+});
+test('桥接只允许一条在途心跳，并在传输中绑定实例',()=>{
+  const f=fixture(),sent=[];
+  f.c.XMLHttpRequest=function(){this.headers={};this.open=(method,path)=>{this.method=method;this.path=path;};this.setRequestHeader=(k,v)=>{this.headers[k]=v;};this.send=body=>{this.body=body;sent.push(this);};};
+  const source=fs.readFileSync('addin/main.js','utf8');vm.runInContext(source,f.c);f.c.bridgeToken='token';
+  f.c.tick();f.c.tick();assert.equal(sent.length,1);
+  const first=sent[0];assert.equal(first.headers['X-Formatter-Client'],f.c.bridgeClientID);assert.equal(JSON.parse(first.body).clientID,f.c.bridgeClientID);
+  first.status=200;first.responseText='{}';first.onload();f.c.tick();assert.equal(sent.length,2);
+});
 test('没有取得字体列表时仍显示等待，空数组只在实际查询完成后出现',()=>{
   const f=fixture();f.c.FormatterCore.fonts=()=>{throw Error('not ready');};assert.equal(f.c.status().fonts,null);
   f.c.FormatterCore.fonts=()=>[];assert.deepEqual(f.c.status().fonts,[]);
