@@ -2,17 +2,19 @@
 'use strict';
 var view=document.getElementById('resultView'),templateName=document.getElementById('templateName'),
     status=document.getElementById('resultStatus'),message=document.getElementById('resultMessage');
+var owner=new URLSearchParams(window.location.hash.slice(1)).get('clientID');
 document.getElementById('close').onclick=function(){window.close();};
 function read(path,token){
  var controller=new AbortController(),timer=setTimeout(function(){controller.abort();},8000);
- return fetch(path,{method:'GET',signal:controller.signal,headers:token?{'X-Formatter-Token':token}:{}})
+ var headers=token?{'X-Formatter-Token':token}:{};if(owner!==null)headers['X-Formatter-Client']=owner;
+ return fetch(path,{method:'GET',signal:controller.signal,headers:headers})
   .then(function(response){return response.json().then(function(data){
    if(!response.ok||data.error)throw new Error(response.status===403?'服务已更新，请关闭后重新打开结果窗口。':data.error||'本地服务无法连接。');
    return data;
   });}).finally(function(){clearTimeout(timer);});
 }
 function show(settings,snapshot){
- var result=snapshot.result||{},detail=typeof result.message==='string'?result.message:'',name=result.template;
+ var result=snapshot.uiResult&&Object.keys(snapshot.uiResult).length?snapshot.uiResult:snapshot.result||{},detail=typeof result.message==='string'?result.message:'',name=result.template;
  if(typeof name==='string'&&name.trim())name=name.replace(/^当前模板：/,'');
  else{
   var templates=settings&&Array.isArray(settings.templates)?settings.templates:[],selected=templates.filter(function(template){return template.id===settings.activeTemplateID;})[0];

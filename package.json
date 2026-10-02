@@ -1,0 +1,13 @@
+{
+  "name": "wps-local-formatter",
+  "version": "1.2.0-beta.1",
+  "private": true,
+  "description": "Local WPS formatter host and reversible per-user setup",
+  "engines": { "node": "^22.0.0 || ^24.0.0" },
+  "scripts": {
+    "start": "node node-host/cli.mjs host",
+    "check": "node node-host/cli.mjs check",
+    "test:host": "node --test tests/host*.test.cjs tests/setup*.test.cjs"
+  },
+  "dependencies": { "@xmldom/xmldom": "0.9.12" }
+}

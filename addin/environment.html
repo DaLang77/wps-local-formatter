@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>环境检查</title><link rel="stylesheet" href="settings.css"><link rel="stylesheet" href="environment.css"><script src="environment.js" defer></script></head>
+<body><main><header><div><h1>环境检查</h1><p>本地服务、WPS 连接和文档状态分别检查。</p></div><button id="close" type="button">关闭</button></header>
+<nav class="page-links" aria-label="排版工具"><a href="settings.html">排版设置</a><a href="structure.html">文档结构</a><a href="environment.html" aria-current="page">环境检查</a></nav>
+<div id="feedback" role="status" aria-live="polite">正在检查环境…</div><div class="environment-actions"><button id="refresh" type="button" class="primary">重新检查</button><span id="checkedAt"></span></div>
+<section class="panel" aria-labelledby="checksTitle"><h2 id="checksTitle">连接与版本</h2><ul id="checks" class="check-list"></ul></section>
+<section class="panel font-panel" aria-labelledby="fontsTitle"><h2 id="fontsTitle">本机字体</h2><p id="fontStatus">等待 WPS 字体列表…</p><div id="fontReplacements" class="font-replacements"></div><button id="saveFonts" type="button" class="primary" hidden>保存字体选择</button><p id="fontFeedback" role="status" aria-live="polite"></p><p class="hint">仅在取得 WPS 字体列表后确认缺字。替换由你选择并保存，排版不会静默更换字体。</p></section>
+<section class="panel troubleshooting" aria-labelledby="helpTitle"><h2 id="helpTitle">首次使用与恢复</h2><p>运行 ZIP 内的“初始化.command”，随后在 WPS 中打开“一键排版”。重复初始化用于更新；恢复或移除时使用“回退.command”或“卸载.command”。</p><p>服务无法连接时先运行“环境检查.command”；端口被占用时核对占用程序，权限拒绝时按系统提示授权。注册或版本异常时保存并自行退出 WPS，再重新初始化。</p></section>
+</main></body></html>

@@ -1,28 +1,33 @@
 # 参与贡献
 
-欢迎通过 Issue 或 Pull Request 提交修复。当前目标为 Apple 芯片 Mac、macOS 13 及以上的 WPS 文字。
+当前目标为 Apple 芯片 Mac、macOS 13 及以上的 WPS 文字。运行时需要 Node.js 22 或 24 LTS。
 
 ## 本地检查
 
-需要 Xcode Command Line Tools、Node.js 22 或以上和 Python 3。克隆仓库后在根目录运行：
-
 ```sh
+npm ci --ignore-scripts
 node --test tests/*.test.cjs
-python3 tests/verify-settings-store.py
-python3 tests/verify-installer.py
-bash scripts/build.sh
+node node-host/cli.mjs selftest
+bash scripts/package.sh
+python3 tests/verify-package.py
 ```
 
-JavaScript 测试可在其他系统运行；Swift 检查与应用构建需要 macOS。GitHub Actions 执行这些检查，不启动 WPS、不安装插件、不访问用户文档。
+可选浏览器测试需要 `npm install --no-save --package-lock=false playwright` 和 Chrome，再运行 `node --test tests/ui-browser.test.cjs`。图片示例运行 `node scripts/capture-demo-images.cjs`。这些工具只使用合成数据，不是普通用户依赖；插件构建会重新按锁文件收集唯一运行依赖。
+
+保留的 Swift 历史兼容检查需要 macOS 和 Xcode Command Line Tools：`python3 tests/verify-settings-store.py`、`python3 tests/verify-installer.py`。不为新版本构建 App/DMG。
+
+GitHub Actions 检查 Node 22/24、回归、归档白名单与校验，不启动 WPS或访问个人文档。浏览器条件测试未取得运行依赖时明确跳过，不能称作通过。
 
 ## WPS 实测
 
-涉及排版行为的修改，还需在 WPS 中用合成文档验证：读取实际格式、确认文字及排除区域未改变、重复执行没有修改、一次撤销恢复原状。记录系统与 WPS 版本；成功提示或模拟测试不能代替实际文档验证。
+用 `python3 tests/create-v12-fixtures.py` 生成合成文档（可选开发依赖 python-docx）。涉及排版的修改还须真实 WPS 回读，确认正文、表格、文本框、编号、选区外属性、重复执行和一次撤销。记录系统与 WPS 版本；模拟或成功提示不能代替实际文档证据。
 
-`python3 tests/create-fixtures.py` 可生成合成测试文档，需要额外安装 `python-docx`。诊断需显式开启 `--diagnostics`，仅用于名称为 `WPS排版*.docx` 的测试文件。历史 `tests/verify-live.py` 需要本地诊断快照，不属于自动检查；快照不随仓库发布。
+在已构建的候选运行目录中，诊断用 `node node-host/cli.mjs host --diagnostics --settings /绝对隔离路径`；须先确认原服务已停止、端口空闲。运行根目录中的 `python3 scripts/live-v12.py analyze notice-analysis --fixture WPS排版v12通知.docx`。脚本核对候选 build-id、插件版本/API/心跳和准确文档名；证据名不能含路径，不覆盖已有文件。检查、接口探测和撤销需要诊断模式；不自动重试修改操作。
+
+不得自动关闭 WPS或保存真实用户文档。快照只存本地 `evidence/`，不进入公开包。
 
 ## 提交范围
 
-请说明问题、修改后的行为和验证结果。与现有模板兼容，保留撤销及原有内容保护；不要用放宽校验掩盖 WPS 写入失败。
+保持 v1 模板迁移兼容、版本和 revision；分析/范围/修改计划共用同一核心。不要放宽回读校验掩盖 WPS 拒绝写入。
 
-不要提交真实客户文书、个人模板、诊断快照、日志、凭据或字体。使用自行生成的示例，发布前检查文件内容；不要只依赖 `.gitignore`。新增代码和项目图形素材须可按 MIT 许可证分发，并在需要时补充来源说明。
+说明具体触发、修改后的行为及验证边界。只暂存明确路径，不提交客户文书、个人模板、诊断快照、日志、凭据或字体。MIT 源码和第三方许可须兼容，新增公开文件需要内容审查。
